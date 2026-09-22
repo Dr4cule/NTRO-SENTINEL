@@ -1,0 +1,9 @@
+scenarios:
+  - {name: ddos, label: ddos/syn_flood, source: generated metadata-only acceptance scenario}
+  - {name: ddos_udp_reflection, label: ddos/udp_reflection_amplification, source: generated metadata-only acceptance scenario}
+  - {name: ddos_spoof, label: ddos/spoof_like_source_flood, source: generated metadata-only acceptance scenario}
+  - {name: c2, label: c2_beaconing, source: generated metadata-only acceptance scenario}
+  - {name: dns, label: dga_dns_tunnel, source: generated metadata-only acceptance scenario}
+  - {name: encrypted, label: encrypted_malware, source: generated metadata-only acceptance scenario}
+  - {name: recon, label: recon_scan, source: generated metadata-only acceptance scenario}
+  - {name: exfil, label: exfiltration, source: generated metadata-only acceptance scenario}

@@ -1,0 +1,59 @@
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes: ["redis-data:/data"]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  api:
+    build: .
+    environment: {ALERT_DB: /data/sentinel.db}
+    volumes: ["./artifacts:/data"]
+    ports: ["8000:8000"]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    deploy: {resources: {limits: {memory: 256M, cpus: '0.50'}}}
+  worker:
+    build: .
+    command: ["python", "-m", "engine.stream_consumer"]
+    environment: {ALERT_DB: /data/sentinel.db, REDIS_URL: redis://redis:6379/0, ARTIFACT_DIR: /data}
+    volumes: ["./artifacts:/data"]
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      redis:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    deploy: {resources: {limits: {memory: 512M, cpus: '1.00'}}}
+  trainer:
+    build: .
+    command: ["python", "-m", "models.train_models"]
+    environment: {MODEL_DIR: /data/models}
+    volumes: ["./models/artifacts:/data/models"]
+    profiles: ["tools"]
+    # Offline build tool only; runs as root solely to write the bind-mounted model artifact.
+    user: "0:0"
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  evaluator:
+    build: .
+    command: ["python", "-m", "models.evaluate_models"]
+    environment: {MODEL_DIR: /data/models}
+    volumes: ["./models/artifacts:/data/models"]
+    profiles: ["tools"]
+    user: "0:0"
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+volumes:
+  redis-data:

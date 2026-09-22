@@ -1,0 +1,1 @@
+{"src_ip": "10.50.0.5", "src_port": 50000, "dst_ip": "198.51.100.10", "dst_port": 443, "proto": "tcp", "orig_bytes": 9000, "resp_bytes": 50, "conn_state": "SF", "ts": 1000.0, "kind": "conn", "tls": true, "ja3": "unknown-demo", "sni": "edge.example", "suspicious_fingerprint": true}

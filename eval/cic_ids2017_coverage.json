@@ -1,0 +1,137 @@
+{
+  "dataset": "CIC-IDS2017 (Sharafaldin, Lashkari & Ghorbani) \u2014 de-identified flow-feature release",
+  "files": [
+    "Benign-Monday-no-metadata.parquet",
+    "Botnet-Friday-no-metadata.parquet",
+    "Bruteforce-Tuesday-no-metadata.parquet",
+    "DDoS-Friday-no-metadata.parquet",
+    "DoS-Wednesday-no-metadata.parquet",
+    "Infiltration-Thursday-no-metadata.parquet",
+    "Portscan-Friday-no-metadata.parquet",
+    "WebAttacks-Thursday-no-metadata.parquet"
+  ],
+  "total_flows": 2313810,
+  "feature_columns": 78,
+  "metadata_columns_present": [
+    "orig_bytes",
+    "proto",
+    "resp_bytes"
+  ],
+  "label_census": {
+    "Benign": 1977318,
+    "Bot": 1437,
+    "FTP-Patator": 5931,
+    "SSH-Patator": 3219,
+    "DDoS": 128014,
+    "DoS Hulk": 172846,
+    "DoS GoldenEye": 10286,
+    "DoS slowloris": 5385,
+    "DoS Slowhttptest": 5228,
+    "Heartbleed": 11,
+    "Infiltration": 36,
+    "PortScan": 1956,
+    "Web Attack \ufffd Brute Force": 1470,
+    "Web Attack \ufffd XSS": 652,
+    "Web Attack \ufffd Sql Injection": 21
+  },
+  "detector_coverage": {
+    "ddos": {
+      "required": [
+        "src_ip",
+        "dst_ip",
+        "proto",
+        "tcp_flags/conn_state"
+      ],
+      "missing": [
+        "src_ip",
+        "dst_ip",
+        "tcp_flags/conn_state"
+      ],
+      "can_run": false
+    },
+    "c2_beaconing": {
+      "required": [
+        "src_ip",
+        "dst_ip",
+        "timestamp"
+      ],
+      "missing": [
+        "src_ip",
+        "dst_ip",
+        "timestamp"
+      ],
+      "can_run": false
+    },
+    "dga_dns_tunnel": {
+      "required": [
+        "dns_query"
+      ],
+      "missing": [
+        "dns_query"
+      ],
+      "can_run": false
+    },
+    "encrypted_malware": {
+      "required": [
+        "tls_ja3/sni",
+        "src_ip",
+        "orig_bytes",
+        "resp_bytes"
+      ],
+      "missing": [
+        "tls_ja3/sni",
+        "src_ip"
+      ],
+      "can_run": false
+    },
+    "recon_scan": {
+      "required": [
+        "src_ip",
+        "dst_port"
+      ],
+      "missing": [
+        "src_ip",
+        "dst_port"
+      ],
+      "can_run": false
+    },
+    "exfiltration": {
+      "required": [
+        "src_ip",
+        "dst_ip",
+        "orig_bytes"
+      ],
+      "missing": [
+        "src_ip",
+        "dst_ip"
+      ],
+      "can_run": false
+    }
+  },
+  "detectors_runnable": [],
+  "label_to_sentinel_class": {
+    "c2_beaconing": [
+      "Bot"
+    ],
+    "recon_scan": [
+      "FTP-Patator",
+      "SSH-Patator",
+      "PortScan"
+    ],
+    "ddos": [
+      "DDoS",
+      "DoS Hulk",
+      "DoS GoldenEye",
+      "DoS slowloris",
+      "DoS Slowhttptest"
+    ],
+    "encrypted_malware": [
+      "Heartbleed"
+    ],
+    "exfiltration": [
+      "Infiltration"
+    ]
+  },
+  "verdict": "This release carries CICFlowMeter statistical features only; the IP/port/DNS/TLS/timestamp metadata every Sentinel detector groups on is absent, so no detector can be exercised on it. Use the CIC-IDS2017 PCAPs replayed through Zeek (build-guide Tier A) to validate the detectors on this dataset.",
+  "note": "Coverage/fit check only. No precision/recall/F1 is computed or claimed here."
+}

@@ -1,0 +1,5 @@
+{"src_ip": "10.40.0.5", "src_port": 50000, "dst_ip": "198.51.100.10", "dst_port": 53, "proto": "udp", "orig_bytes": 120, "resp_bytes": 200, "conn_state": "SF", "ts": 1000.0, "kind": "dns", "query": "a9f3k2m8q1z7x5v2n0.example.net"}
+{"src_ip": "10.40.0.5", "src_port": 50000, "dst_ip": "198.51.100.10", "dst_port": 53, "proto": "udp", "orig_bytes": 120, "resp_bytes": 200, "conn_state": "SF", "ts": 1001.0, "kind": "dns", "query": "a9f3k2m8q1z7x5v2n1.example.net"}
+{"src_ip": "10.40.0.5", "src_port": 50000, "dst_ip": "198.51.100.10", "dst_port": 53, "proto": "udp", "orig_bytes": 120, "resp_bytes": 200, "conn_state": "SF", "ts": 1002.0, "kind": "dns", "query": "a9f3k2m8q1z7x5v2n2.example.net"}
+{"src_ip": "10.40.0.5", "src_port": 50000, "dst_ip": "198.51.100.10", "dst_port": 53, "proto": "udp", "orig_bytes": 120, "resp_bytes": 200, "conn_state": "SF", "ts": 1003.0, "kind": "dns", "query": "a9f3k2m8q1z7x5v2n3.example.net"}
+{"src_ip": "10.40.0.5", "src_port": 50000, "dst_ip": "198.51.100.10", "dst_port": 53, "proto": "udp", "orig_bytes": 120, "resp_bytes": 200, "conn_state": "SF", "ts": 1004.0, "kind": "dns", "query": "a9f3k2m8q1z7x5v2n4.example.net"}

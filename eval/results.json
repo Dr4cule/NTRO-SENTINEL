@@ -1,0 +1,210 @@
+{
+  "evaluation_type": "controlled scenario-level detection coverage",
+  "definition": "A scenario is detected when at least one alert has its known target threat class. This is not packet-level precision, recall, or F1.",
+  "scenario_results": [
+    {
+      "scenario": "benign",
+      "ground_truth": "benign",
+      "events": 15,
+      "alert_count": 0,
+      "matched_alert_count": 0,
+      "detected": true,
+      "expected_subtype": null,
+      "subtype_matched": null,
+      "unexpected_classes": [],
+      "predicted": {}
+    },
+    {
+      "scenario": "ddos",
+      "ground_truth": "ddos",
+      "events": 25,
+      "alert_count": 1,
+      "matched_alert_count": 1,
+      "detected": true,
+      "expected_subtype": "syn_flood",
+      "subtype_matched": true,
+      "unexpected_classes": [],
+      "predicted": {
+        "ddos": 1
+      }
+    },
+    {
+      "scenario": "ddos_udp_reflection",
+      "ground_truth": "ddos",
+      "events": 25,
+      "alert_count": 1,
+      "matched_alert_count": 1,
+      "detected": true,
+      "expected_subtype": "udp_reflection_amplification",
+      "subtype_matched": true,
+      "unexpected_classes": [],
+      "predicted": {
+        "ddos": 1
+      }
+    },
+    {
+      "scenario": "ddos_spoof",
+      "ground_truth": "ddos",
+      "events": 25,
+      "alert_count": 1,
+      "matched_alert_count": 1,
+      "detected": true,
+      "expected_subtype": "spoof_like_source_flood",
+      "subtype_matched": true,
+      "unexpected_classes": [],
+      "predicted": {
+        "ddos": 1
+      }
+    },
+    {
+      "scenario": "c2",
+      "ground_truth": "c2_beaconing",
+      "events": 5,
+      "alert_count": 2,
+      "matched_alert_count": 2,
+      "detected": true,
+      "expected_subtype": null,
+      "subtype_matched": null,
+      "unexpected_classes": [],
+      "predicted": {
+        "c2_beaconing": 2
+      }
+    },
+    {
+      "scenario": "dns",
+      "ground_truth": "dga_dns_tunnel",
+      "events": 5,
+      "alert_count": 2,
+      "matched_alert_count": 2,
+      "detected": true,
+      "expected_subtype": null,
+      "subtype_matched": null,
+      "unexpected_classes": [],
+      "predicted": {
+        "dga_dns_tunnel": 2
+      }
+    },
+    {
+      "scenario": "encrypted",
+      "ground_truth": "encrypted_malware",
+      "events": 1,
+      "alert_count": 1,
+      "matched_alert_count": 1,
+      "detected": true,
+      "expected_subtype": null,
+      "subtype_matched": null,
+      "unexpected_classes": [],
+      "predicted": {
+        "encrypted_malware": 1
+      }
+    },
+    {
+      "scenario": "recon",
+      "ground_truth": "recon_scan",
+      "events": 15,
+      "alert_count": 1,
+      "matched_alert_count": 1,
+      "detected": true,
+      "expected_subtype": null,
+      "subtype_matched": null,
+      "unexpected_classes": [],
+      "predicted": {
+        "recon_scan": 1
+      }
+    },
+    {
+      "scenario": "exfil",
+      "ground_truth": "exfiltration",
+      "events": 5,
+      "alert_count": 1,
+      "matched_alert_count": 1,
+      "detected": true,
+      "expected_subtype": null,
+      "subtype_matched": null,
+      "unexpected_classes": [],
+      "predicted": {
+        "exfiltration": 1
+      }
+    }
+  ],
+  "confusion": {
+    "classes": [
+      "ddos",
+      "c2_beaconing",
+      "dga_dns_tunnel",
+      "encrypted_malware",
+      "recon_scan",
+      "exfiltration"
+    ],
+    "confusion_truth_x_pred": {
+      "ddos": {
+        "ddos": 3,
+        "c2_beaconing": 0,
+        "dga_dns_tunnel": 0,
+        "encrypted_malware": 0,
+        "recon_scan": 0,
+        "exfiltration": 0
+      },
+      "c2_beaconing": {
+        "ddos": 0,
+        "c2_beaconing": 2,
+        "dga_dns_tunnel": 0,
+        "encrypted_malware": 0,
+        "recon_scan": 0,
+        "exfiltration": 0
+      },
+      "dga_dns_tunnel": {
+        "ddos": 0,
+        "c2_beaconing": 0,
+        "dga_dns_tunnel": 2,
+        "encrypted_malware": 0,
+        "recon_scan": 0,
+        "exfiltration": 0
+      },
+      "encrypted_malware": {
+        "ddos": 0,
+        "c2_beaconing": 0,
+        "dga_dns_tunnel": 0,
+        "encrypted_malware": 1,
+        "recon_scan": 0,
+        "exfiltration": 0
+      },
+      "recon_scan": {
+        "ddos": 0,
+        "c2_beaconing": 0,
+        "dga_dns_tunnel": 0,
+        "encrypted_malware": 0,
+        "recon_scan": 1,
+        "exfiltration": 0
+      },
+      "exfiltration": {
+        "ddos": 0,
+        "c2_beaconing": 0,
+        "dga_dns_tunnel": 0,
+        "encrypted_malware": 0,
+        "recon_scan": 0,
+        "exfiltration": 1
+      }
+    },
+    "benign_predicted": {},
+    "benign_events": 15,
+    "benign_alerts": 0,
+    "benign_false_positive_rate": 0.0,
+    "alert_level_precision": {
+      "ddos": 1.0,
+      "c2_beaconing": 1.0,
+      "dga_dns_tunnel": 1.0,
+      "encrypted_malware": 1.0,
+      "recon_scan": 1.0,
+      "exfiltration": 1.0
+    },
+    "note": "Alert-level precision on the controlled corpus (homogeneous scenarios). Flow-level recall/F1 is intentionally not claimed."
+  },
+  "summary": {
+    "attack_scenarios": 8,
+    "detected_attack_scenarios": 8,
+    "benign_alert_count": 0,
+    "benign_false_positive_rate": 0.0,
+    "ddos_subtype_scenarios_matched": 3
+  }
+}

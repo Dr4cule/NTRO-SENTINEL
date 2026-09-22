@@ -1,0 +1,56 @@
+datasets:
+  - name: sentinel-safe-lab-pcaps
+    source: traffic-gen/generators/generate_pcaps.py
+    license_usage: Locally generated safe lab traffic; replay only inside the supplied isolated Docker lab.
+    pcap_filenames: [safe_syn_flood.pcap, safe_udp_reflection.pcap, safe_dns_tunnel.pcap, safe_recon.pcap, safe_mixed.pcap]
+    sha256: Adjacent .pcap.sha256 files generated with each PCAP.
+    threat_classes: [ddos, dga_dns_tunnel, recon_scan]
+    label_mapping:
+      safe_syn_flood.pcap: ddos/syn_flood
+      safe_udp_reflection.pcap: ddos/udp_reflection_amplification
+      safe_dns_tunnel.pcap: dga_dns_tunnel/dns_tunnel
+      safe_recon.pcap: recon_scan/vertical_scan
+    preprocessing: Live tcpreplay into Docker-contained one-way monitor veth; Zeek 9.0 captures live interface.
+    limitations: Synthetic private/test-net addresses; no claim of external traffic representativeness.
+  - name: sentinel-metadata-scenarios
+    source: traffic-gen/generators/generate_scenarios.py
+    license_usage: Locally generated metadata-only controlled acceptance inputs.
+    threat_classes: [ddos, c2_beaconing, dga_dns_tunnel, encrypted_malware, recon_scan, exfiltration]
+    label_mapping: experiments/scenarios.yml
+    preprocessing: JSONL incremental replay into Redis Streams.
+    limitations: Supports controlled behavior coverage, not PCAP-derived external accuracy claims.
+  - name: cic-ids2017-flow-feature-parquet
+    source: "Sharafaldin, Lashkari & Ghorbani (CIC-IDS2017); de-identified CICFlowMeter flow-feature release (8 parquet files, 2,313,810 flows)"
+    license_usage: Public research dataset; not redistributed here. Verify CIC license terms before use.
+    threat_classes_in_labels: [DDoS, DoS Hulk/GoldenEye/slowloris/Slowhttptest, PortScan, Bot, FTP/SSH-Patator, Infiltration, Heartbleed, Web Attack]
+    # Coverage verified against the ACTUAL files with eval/cic_ids2017_coverage.py (build-guide sec 2), not copied from a paper.
+    coverage_matrix: {ddos: NO, c2_beaconing: NO, dga_dns_tunnel: NO, encrypted_malware: NO, recon_scan: NO, exfiltration: NO}
+    verification_result: >
+      This release holds 78 CICFlowMeter statistical features + Label only. The IP/port/DNS-query/
+      TLS-fingerprint/timestamp metadata every Sentinel detector groups on is absent, so NO detector
+      can be exercised on it (proto + byte totals are the only usable fields). Not a fit for a passive
+      metadata pipeline.
+    correct_path: Obtain the CIC-IDS2017 PCAPs and replay through Zeek (Tier A) — scripts/run_pcap_replay.sh — to drive the live detectors.
+    limitations: Flow-feature aggregates suit a supervised tabular IDS, not Sentinel's metadata correlators. No performance claimed from this artifact.
+  - name: cic-ids2017-thursday-pcap
+    source: "CIC-IDS2017 Thursday-WorkingHours.pcap (7.8 GB raw capture; morning=Web Attacks, afternoon=Infiltration)"
+    license_usage: Public research dataset; not redistributed here. Verify CIC license terms before use.
+    # Zeek + tcpreplay are absent in this env, so the Tier-A path can't run. Tested via an offline,
+    # payload-blind PCAP->events adapter (ingest/pcap_to_events.py) that mirrors the tailer schema.
+    coverage_matrix: {ddos: PARTIAL, c2_beaconing: PARTIAL, dga_dns_tunnel: YES, encrypted_malware: NO, recon_scan: YES, exfiltration: PARTIAL}
+    verification_result: >
+      Bounded sample (first 800k packets, ~13.6 min of a full workday). The pipeline runs end-to-end on
+      real capture data: 800k packets -> 14,565 events (6,456 conn + 8,109 dns) -> 118 alerts, contract
+      validation + correlation intact; detector step p50/p95/p99 = 0.068/0.61/0.87 ms (single-thread,
+      offline). BUT the sample predates the labeled attack windows: attacker 172.16.0.1 is absent, and
+      victim 192.168.10.50 is present (517 events) yet raises ZERO alerts because its Web Attacks are
+      HTTP-payload and invisible to payload-blind metadata detection by design. All 118 alerts come from
+      internal RFC1918 hosts doing normal browsing/DNS -> false positives: many-host browsing reads as
+      recon horizontal_scan, CDN/cloud hostnames read as DGA, high resolver query volume reads as dns
+      tunnel, and correlation stacks those into secondary c2 correlated_multi_signal (zero primary beacons).
+    correct_path: Replay the full PCAP through Zeek (Tier A) and join CIC's IP+time+port ground truth for real P/R/F1; tune detector baselines/whitelists for internet-facing traffic before scoring.
+    limitations: >
+      No P/R/F1 claimed — no inline label join and the sample does not reach the labeled windows. Confirms
+      plumbing on real data and shows the enclave-tuned thresholds over-fire on raw enterprise traffic;
+      encrypted_malware not exercised (offline adapter derives no JA3, and ssl.log-style events carry no byte ratio).
+

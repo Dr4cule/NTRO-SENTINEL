@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+artifacts/*.json
+artifacts/*.jsonl
+models/artifacts/
+artifacts/models/
+artifacts/evidence-bundle-*/
+artifacts/zeek-live-*/
+traffic-gen/pcaps/*.pcap
+.claude/
+NTRO-Cyber-Threat-Detection-*.md

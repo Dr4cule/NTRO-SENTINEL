@@ -1,0 +1,1 @@
+{"type":"object","required":["kind","src_ip","dst_ip","proto"],"properties":{"kind":{"enum":["conn","dns","tls","early_event"]}}}

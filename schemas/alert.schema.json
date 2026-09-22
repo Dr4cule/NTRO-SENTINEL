@@ -1,0 +1,1 @@
+{"type":"object","required":["alert_id","timestamp","flow_id","threat_class","subtype","confidence","severity","supporting_evidence","mitre_attack","model_version"],"properties":{"threat_class":{"enum":["ddos","c2_beaconing","dga_dns_tunnel","encrypted_malware","recon_scan","exfiltration"]},"confidence":{"type":"number","minimum":0,"maximum":1}}}

@@ -1,0 +1,5 @@
+{"src_ip": "10.70.0.5", "src_port": 50000, "dst_ip": "198.51.100.200", "dst_port": 443, "proto": "tcp", "orig_bytes": 110000, "resp_bytes": 1000, "conn_state": "SF", "ts": 1000.0, "kind": "conn"}
+{"src_ip": "10.70.0.5", "src_port": 50000, "dst_ip": "198.51.100.200", "dst_port": 443, "proto": "tcp", "orig_bytes": 110000, "resp_bytes": 1000, "conn_state": "SF", "ts": 1001.0, "kind": "conn"}
+{"src_ip": "10.70.0.5", "src_port": 50000, "dst_ip": "198.51.100.200", "dst_port": 443, "proto": "tcp", "orig_bytes": 110000, "resp_bytes": 1000, "conn_state": "SF", "ts": 1002.0, "kind": "conn"}
+{"src_ip": "10.70.0.5", "src_port": 50000, "dst_ip": "198.51.100.200", "dst_port": 443, "proto": "tcp", "orig_bytes": 110000, "resp_bytes": 1000, "conn_state": "SF", "ts": 1003.0, "kind": "conn"}
+{"src_ip": "10.70.0.5", "src_port": 50000, "dst_ip": "198.51.100.200", "dst_port": 443, "proto": "tcp", "orig_bytes": 110000, "resp_bytes": 1000, "conn_state": "SF", "ts": 1004.0, "kind": "conn"}
