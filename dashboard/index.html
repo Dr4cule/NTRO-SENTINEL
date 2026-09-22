@@ -131,6 +131,11 @@
     padding:8px 11px;min-width:210px;border:2px solid var(--edge);background:var(--card);color:var(--ink);outline:none}
   .search::placeholder{color:var(--faint);font-weight:700}
   .search:focus{box-shadow:var(--shadow-sm)}
+  .upload{border:2px solid var(--edge);background:var(--edge);color:#fff;font:inherit;font-size:10.5px;font-weight:800;
+    padding:8px 13px;cursor:pointer;text-transform:uppercase;letter-spacing:.03em;white-space:nowrap}
+  .upload:hover{box-shadow:var(--shadow-sm)}
+  .upload:disabled{opacity:.55;cursor:progress}
+  .upstat{font-family:ui-monospace,monospace;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.02em;color:var(--muted)}
   .filters{display:flex;gap:7px;flex-wrap:wrap}
   .filters button{border:2px solid var(--edge);background:var(--card);color:var(--ink);
     font:inherit;font-size:10.5px;font-weight:800;padding:6px 11px;cursor:pointer;transition:none;display:inline-flex;align-items:center;gap:6px;text-transform:uppercase;letter-spacing:.02em}
@@ -301,6 +306,9 @@
         <div><h3>Live detection feed</h3><span class="sub">select an alert to inspect the exact detector evidence</span></div>
         <div class="feedtools">
           <input id="q" class="search" type="search" placeholder="Search ip · class · evidence" autocomplete="off" spellcheck="false" aria-label="Search alerts">
+          <input id="upfile" type="file" accept=".pcap,.pcapng,.cap,.jsonl,.json,.log" hidden>
+          <button id="upbtn" class="upload" type="button" title="Analyze a pcap or Zeek/JSONL log — parsed payload-blind and added to the store">Upload capture</button>
+          <span id="upstat" class="upstat" role="status" aria-live="polite"></span>
         </div>
       </div>
       <div class="ftrow">
@@ -521,6 +529,22 @@ function closeDrawer(){$("scrim").classList.remove("open");$("drawer").classList
 $("x").addEventListener("click",closeDrawer);$("scrim").addEventListener("click",closeDrawer);
 document.addEventListener("keydown",e=>{if(e.key==="Escape")closeDrawer();});
 $("q").addEventListener("input",e=>{Q=e.target.value.trim().toLowerCase();SHOWN=PAGE;renderFeed();});
+
+/* ---------- upload a capture/log for analysis (payload-blind parse -> same store the feed reads) ---------- */
+$("upbtn").addEventListener("click",()=>$("upfile").click());
+$("upfile").addEventListener("change",async e=>{
+  const f=e.target.files[0];if(!f)return;
+  const btn=$("upbtn"),stat=$("upstat");
+  btn.disabled=true;stat.style.color="var(--muted)";stat.textContent=`Analyzing ${f.name}…`;
+  try{
+    const r=await fetch("/api/ingest",{method:"POST",headers:{"X-Filename":f.name},body:f});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error||d.detail||r.status);
+    stat.style.color="#0f6f57";stat.textContent=`+${d.alerts_added} alerts · ${d.total_alerts} total`;
+    await load();
+  }catch(err){stat.style.color="var(--sev-crit)";stat.textContent=`Upload failed: ${err.message}`;}
+  finally{btn.disabled=false;e.target.value="";}
+});
 
 /* ---------- sidebar nav active state (highlight follows the selected view) ---------- */
 const navLinks=[...document.querySelectorAll("nav a")];

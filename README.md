@@ -26,6 +26,30 @@ Three constraints shape every design choice:
 - **One-way** — the sensor can only *receive* a mirror; it never emits onto the monitored link.
 - **Honest** — no fabricated metrics. Every number is produced by a committed script or not claimed at all.
 
+## Dashboard
+
+A single-file, zero-dependency, air-gapped analyst console — live KPIs, an explainable detection feed, and per-source relationship forensics. No payload bytes ever reach it.
+
+<div align="center">
+
+<img src="docs/assets/screenshots/command-centre.png" alt="Security Command Centre — active alerts, throughput, latency, alerts-over-time and per-class threat distribution" width="100%">
+
+<sub><b>Command Centre</b> · live KPIs, the detection stream, and per-class volume — chain-verified, streaming live.</sub>
+
+<br><br>
+
+<img src="docs/assets/screenshots/relationship-graph.png" alt="Source-to-destination relationship graph, confidence distribution histogram, and top source hosts" width="100%">
+
+<sub><b>Relationship graph</b> · source→destination edges coloured by threat class, width = alert volume; confidence distribution and top talkers alongside.</sub>
+
+<br><br>
+
+<img src="docs/assets/screenshots/detection-feed.png" alt="Live detection feed listing alerts with anchor flow, evidence signal, severity and detector score" width="100%">
+
+<sub><b>Evidence vault</b> · every alert with the exact detector evidence that raised it — filterable by class and severity.</sub>
+
+</div>
+
 ## Project status
 
 Everything below is built, wired end-to-end, and runnable today:

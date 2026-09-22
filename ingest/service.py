@@ -13,7 +13,7 @@ Sources (any combination, run together):
   python -m ingest.service --live eth0 --watch artifacts/inbox # 24/7: live + drop-in files
 """
 from __future__ import annotations
-import argparse, json, os, queue, sys, threading, time
+import argparse, json, os, queue, sys, tempfile, threading, time
 from pathlib import Path
 from engine.stream_consumer import Pipeline
 from engine.metrics import StreamMetrics
@@ -24,10 +24,11 @@ from ingest.tailer import normalize
 STOP = threading.Event()
 PCAP_EXT = {'.pcap', '.pcapng', '.cap'}
 
-def consumer(q, store, pipeline, metrics):
-    """The ONLY writer to the store -> hash chain stays consistent."""
+def consumer(q, store, pipeline, metrics, stop=STOP):
+    """The ONLY writer to the store -> hash chain stays consistent. `stop` defaults to the
+    global STOP (live/CLI runs); an upload passes its own event so repeated calls are isolated."""
     last_metric = 0.0
-    while not (STOP.is_set() and q.empty()):
+    while not (stop.is_set() and q.empty()):
         try: e = q.get(timeout=.5)
         except queue.Empty: continue
         t = time.perf_counter()
@@ -51,6 +52,30 @@ def ingest_file(path, q):
                     rec = json.loads(line)
                     q.put(rec if 'kind' in rec else normalize(rec, p.stem))
     print(f'[file] ingested {p}', file=sys.stderr)
+
+_UPLOAD_LOCK = threading.Lock()
+MAX_UPLOAD_BYTES = 300 * 1024 * 1024  # ponytail: whole upload buffered in RAM; stream to disk if >300MB captures matter
+
+def ingest_upload(filename, data):
+    """Analyze one uploaded capture/log end-to-end: parse -> detect -> append to the same
+    artifacts/sentinel.db the dashboard reads. Serialized (one writer at a time) so the
+    tamper-evident hash chain stays consistent. Returns {'file','alerts_added','total_alerts'}."""
+    if not data: raise ValueError('empty upload')
+    if len(data) > MAX_UPLOAD_BYTES: raise ValueError(f'upload exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB cap')
+    name = Path(filename or 'upload.jsonl').name
+    suffix = Path(name).suffix.lower()
+    if suffix not in PCAP_EXT and suffix not in {'.jsonl', '.json', '.log'}: suffix = '.jsonl'  # unknown -> line-json
+    with _UPLOAD_LOCK:
+        store, pipeline, metrics = AlertStore(), Pipeline(), StreamMetrics()
+        before = store.summary()['total_alerts']
+        q = queue.Queue(maxsize=100000); stop = threading.Event()
+        ct = threading.Thread(target=consumer, args=(q, store, pipeline, metrics, stop), daemon=True); ct.start()
+        with tempfile.NamedTemporaryFile(suffix=suffix) as tf:
+            tf.write(data); tf.flush()
+            try: ingest_file(tf.name, q); q.join()
+            finally: stop.set(); ct.join(timeout=60)
+        total = store.summary()['total_alerts']
+    return {'file': name, 'alerts_added': total - before, 'total_alerts': total}
 
 def watch_inbox(inbox, q, seen):
     box = Path(inbox); (box / 'processed').mkdir(parents=True, exist_ok=True)
@@ -114,8 +139,12 @@ def main():
         while True: time.sleep(1)
     except KeyboardInterrupt:
         print('\n[service] draining…', file=sys.stderr); STOP.set()
-        if live and live.sniffer: live.sniffer.stop()
-        q.join(); ct.join(timeout=5)
+        if live and live.sniffer:
+            try: live.sniffer.stop()  # scapy can't always stop an AsyncSniffer socket cleanly
+            except Exception:
+                exc = getattr(live.sniffer, 'exception', None)
+                if exc: print(f'[live] sniffer error: {exc!r}', file=sys.stderr)
+        ct.join(timeout=5)  # daemon sniffer thread dies with us; bounded drain won't hang on a live socket
 
 if __name__ == '__main__':
     main()

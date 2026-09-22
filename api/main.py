@@ -2,8 +2,9 @@
 from __future__ import annotations
 import asyncio
 from pathlib import Path
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from alertstore.store import AlertStore
 
@@ -17,6 +18,14 @@ def health(): return {'status':'ok','version':app.version,'store':'sqlite','chai
 def alerts(threat_class:str|None=None,severity:str|None=None,limit:int=Query(250,ge=1,le=1000)): return store.list(threat_class,severity,limit)
 @app.post('/api/alerts',status_code=201)
 def add_alert(item:IncomingAlert): return {'created':store.append(item.model_dump())}
+@app.post('/api/ingest')
+async def ingest_capture(request:Request):
+ # ponytail: in Docker the redis worker is the live writer; a concurrent upload while it writes can race the
+ # hash chain (safe when the worker is idle — the default compose). run_in_threadpool keeps the event loop free.
+ data=await request.body(); name=request.headers.get('x-filename','upload.jsonl')
+ from ingest.service import ingest_upload
+ try: return await run_in_threadpool(ingest_upload,name,data)
+ except ValueError as e: raise HTTPException(status_code=400,detail=str(e))
 @app.get('/api/dashboard/summary')
 def summary(): return store.summary()
 @app.get('/api/metrics')

@@ -42,6 +42,20 @@ class H(BaseHTTPRequestHandler):
         if p.path == "/api/incidents": return self._send(incidents())
         self.send_response(404); self.end_headers()
 
+    def do_POST(self):
+        if urlparse(self.path).path != "/api/ingest":
+            self.send_response(404); self.end_headers(); return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 < length <= 300 * 1024 * 1024: raise ValueError("empty upload or exceeds 300 MB cap")
+            data = self.rfile.read(length)
+            from ingest.service import ingest_upload  # lazy: keep viewer startup dependency-free
+            self._send(ingest_upload(self.headers.get("X-Filename", "upload.jsonl"), data))
+        except Exception as ex:
+            body = json.dumps({"error": str(ex)}).encode()
+            self.send_response(400); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8001
