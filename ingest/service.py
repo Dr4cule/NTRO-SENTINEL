@@ -107,7 +107,10 @@ class LiveCapture:
         while not STOP.is_set(): STOP.wait(max(self.idle / 2, 1)); self._flush(time.time())
         self._flush(time.time(), final=True)
     def start(self):
-        from scapy.all import AsyncSniffer
+        from scapy.all import AsyncSniffer, get_if_list
+        ifaces = get_if_list()  # fail loud on a bad iface, else the sniffer captures nothing silently
+        if self.iface not in ifaces:
+            raise ValueError(f"interface {self.iface!r} not found — available: {', '.join(sorted(ifaces))}")
         if hasattr(os, 'geteuid') and os.geteuid() != 0:
             print('[live] warning: not root — live capture usually needs root or CAP_NET_RAW', file=sys.stderr)
         self.sniffer = AsyncSniffer(iface=self.iface, prn=self._on, store=False); self.sniffer.start()
