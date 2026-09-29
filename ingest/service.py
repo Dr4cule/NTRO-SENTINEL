@@ -23,6 +23,7 @@ from engine.metrics import StreamMetrics
 from alertstore.store import AlertStore
 from ingest.pcap_to_events import ingest_packet, _conn_event, build_events
 from ingest.tailer import normalize
+from ingest.csv_to_events import has_endpoints
 
 STOP = threading.Event()
 PCAP_EXT = {'.pcap', '.pcapng', '.cap'}
@@ -43,15 +44,17 @@ def consumer(q, store, pipeline, metrics, stop=STOP):
         q.task_done()
     store.metric(**metrics.snapshot())
 
-def ingest_file(path, q):
+def ingest_file(path, q, suffix=None):
     """Replay a pcap, endpoint-CSV, or line-delimited Zeek/event JSON file into the queue.
 
-    Returns None, or the aggregate-analysis dict for endpoint-less CSVs (which yield
-    no per-flow events by design)."""
+    `suffix` overrides the parser choice (an upload spools to a temp file whose real extension
+    is meaningless, so the caller passes the name the client sent). Returns None, or the
+    aggregate-analysis dict for endpoint-less CSVs (which yield no per-flow events by design)."""
     p = Path(path)
-    if p.suffix.lower() in PCAP_EXT:
+    ext = (suffix or p.suffix).lower()
+    if ext in PCAP_EXT:
         for e in build_events(str(p), int(os.getenv('MAX_PACKETS', '2000000'))): q.put(e)
-    elif p.suffix.lower() == '.csv':
+    elif ext == '.csv':
         from ingest.csv_to_events import read_conn_events, analyze_aggregate
         try:
             for e in read_conn_events(str(p), int(os.getenv('MAX_CSV_ROWS', '2000000'))): q.put(e)
@@ -69,47 +72,59 @@ def ingest_file(path, q):
     print(f'[file] ingested {p}', file=sys.stderr)
 
 _UPLOAD_LOCK = threading.Lock()
-MAX_UPLOAD_BYTES = 300 * 1024 * 1024  # ponytail: whole upload buffered in RAM; stream to disk if >300MB captures matter
+# The old 300MB cap was larger than the api container's own 256M memory limit, so a large
+# upload could only ever OOM-kill the process. Default is now comfortably under it, and the
+# body is streamed to disk (never fully buffered) in ingest.api/main.py.
+MAX_UPLOAD_BYTES = int(os.getenv('MAX_UPLOAD_MB', '100')) * 1024 * 1024
 
-def ingest_upload(filename, data):
-    """Analyze one uploaded capture/log end-to-end: parse -> detect -> append to the same
+def _csv_needs_aggregate(path):
+    """Header-only sniff: does this CSV lack per-flow endpoint columns?"""
+    import csv as _csv
+    with open(path, newline='', encoding='utf-8-sig') as f:
+        return not has_endpoints(_csv.DictReader(f).fieldnames)
+
+def ingest_upload_path(filename, path):
+    """Analyze one uploaded file already spooled to disk -> detect -> append to the same
     artifacts/sentinel.db the dashboard reads. Serialized (one writer at a time) so the
-    tamper-evident hash chain stays consistent. Returns {'file','alerts_added','total_alerts'}."""
-    if not data: raise ValueError('empty upload')
-    if len(data) > MAX_UPLOAD_BYTES: raise ValueError(f'upload exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB cap')
+    tamper-evident hash chain stays consistent.
+
+    Accepts a PATH (not bytes) so the caller can stream a large body straight to disk and
+    never hold it in memory. Returns {'file','alerts_added','total_alerts'} plus, for an
+    endpoint-less aggregate CSV, {'analysis','note'}."""
     name = Path(filename or 'upload.jsonl').name
     suffix = Path(name).suffix.lower()
-    if suffix == '.csv':
-        from ingest.csv_to_events import read_conn_events, analyze_aggregate, has_endpoints
-        import csv as _csv
-        with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as tf:
-            tf.write(data); tmp = tf.name
-        try:
-            with open(tmp, newline='', encoding='utf-8-sig') as f:
-                headers = _csv.DictReader(f).fieldnames
-            if not has_endpoints(headers):
-                with _UPLOAD_LOCK:
-                    before = AlertStore().summary()['total_alerts']
-                    info = analyze_aggregate(tmp, int(os.getenv('MAX_CSV_ROWS', '2000000')))
-                return {'file': name, 'alerts_added': 0, 'total_alerts': before,
-                        'analysis': info,
-                        'note': 'Endpoint-less aggregate CSV: assessment only, no flow alerts (see analysis).'}
-        finally:
-            try: os.unlink(tmp)
-            except OSError: pass
-        suffix = '.csv'  # endpoint-bearing -> fall through to the queue path below
-    if suffix not in PCAP_EXT and suffix not in {'.jsonl', '.json', '.log', '.csv'}: suffix = '.jsonl'  # unknown -> line-json
+    if suffix not in PCAP_EXT and suffix not in {'.jsonl', '.json', '.log', '.csv'}:
+        suffix = '.jsonl'  # unknown -> line-json
+    if suffix == '.csv' and _csv_needs_aggregate(path):
+        from ingest.csv_to_events import analyze_aggregate
+        with _UPLOAD_LOCK:
+            before = AlertStore().summary()['total_alerts']
+            info = analyze_aggregate(path, int(os.getenv('MAX_CSV_ROWS', '2000000')))
+        return {'file': name, 'alerts_added': 0, 'total_alerts': before,
+                'analysis': info,
+                'note': 'Endpoint-less aggregate CSV: assessment only, no flow alerts (see analysis).'}
     with _UPLOAD_LOCK:
         store, pipeline, metrics = AlertStore(), Pipeline(), StreamMetrics()
         before = store.summary()['total_alerts']
         q = queue.Queue(maxsize=100000); stop = threading.Event()
         ct = threading.Thread(target=consumer, args=(q, store, pipeline, metrics, stop), daemon=True); ct.start()
-        with tempfile.NamedTemporaryFile(suffix=suffix) as tf:
-            tf.write(data); tf.flush()
-            try: ingest_file(tf.name, q); q.join()
-            finally: stop.set(); ct.join(timeout=60)
+        try: ingest_file(path, q, suffix=suffix); q.join()
+        finally: stop.set(); ct.join(timeout=60)
         total = store.summary()['total_alerts']
     return {'file': name, 'alerts_added': total - before, 'total_alerts': total}
+
+def ingest_upload(filename, data):
+    """Bytes convenience wrapper (dashboard preview server, tests). Spools to a temp file and
+    delegates to ingest_upload_path, so both entry points share one code path and one cap."""
+    if not data: raise ValueError('empty upload')
+    if len(data) > MAX_UPLOAD_BYTES: raise ValueError(f'upload exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB cap')
+    with tempfile.NamedTemporaryFile(suffix='.upload', delete=False) as tf:
+        tf.write(data); tmp = tf.name
+    try:
+        return ingest_upload_path(filename, tmp)
+    finally:
+        try: os.unlink(tmp)
+        except OSError: pass
 
 def watch_inbox(inbox, q, seen):
     box = Path(inbox); (box / 'processed').mkdir(parents=True, exist_ok=True)

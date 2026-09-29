@@ -23,8 +23,9 @@ _TEST_NETS=[ipaddress.ip_network(n) for n in ('192.0.2.0/24','198.51.100.0/24','
 def _is_test_net(ip):
  try: a=ipaddress.ip_address(ip); return any(a in n for n in _TEST_NETS)
  except ValueError: return False
-# LAN/service-discovery noise ports: never C2 on their own (mDNS, SSDP, LLMNR, DHCP, NTP,
-# STUN, MikroTik-neighbour). Suppressed for c2_beaconing only; other classes still inspect them.
+# LAN/service-discovery noise ports: mDNS, SSDP, LLMNR, DHCP, NTP, STUN, MikroTik-neighbour,
+# Google push. A periodic mDNS responder answers from the whole subnet, which looks exactly like
+# a reflection amplifier with many "sources" -> suppress before ANY rule judges the volume.
 _NOISE_PORTS={5353,1900,5355,67,68,123,3478,5678,5228}
 def _is_noise_traffic(e):
  try:
@@ -37,32 +38,86 @@ def _is_noise_traffic(e):
   if e.get('dst_port') in _NOISE_PORTS or e.get('src_port') in _NOISE_PORTS: return True
  except Exception: return False
  return False
-_KNOWN_GOOD_PARENTS=('cloudfront.net','amazonaws.com','akamai.net','akamaiedge.net','akamaihd.net',
- 'fastly.net','fbcdn.net','googleusercontent.com','google.com','gstatic.com','googleapis.com',
- 'azureedge.net','windows.net','microsoft.com','office.com','apple.com','icloud.com',
- 'cloudflare.net','cloudflare.com','edgekey.net','edgesuite.net')
-def _known_good_domain(query):
- q=(query or '').lower().rstrip('.'); return any(q==d or q.endswith('.'+d) for d in _KNOWN_GOOD_PARENTS)
+
+# Provider reputation is looked up by ASN (detectors/reputation.py) from a committed, air-gapped
+# prefix table. A hand-typed IP-prefix list matched only ~50% of real keepalive destinations and a
+# name-regex over the BGP dump matched too much of the internet, so the ASN table is authoritative
+# and carries the provider name into the alert evidence.
+#
+# Ports whose protocol has a LONG-LIVED IDLE by design, so periodic exchange is expected even
+# against an unattributable host: SMTP/IMAP/POP (25,110,143,465,587,993,995,5222,5223,5944),
+# STUN/ICE + push (3478,5228), VoIP/SIP (5060,51820), IRC/XMPP (6667,6697,1633), DNS (53).
+#
+# DELIBERATELY EXCLUDES 443, 8080, 8443, 9300, 9418, 27017, 11211. Those are web/IRC/database
+# ports AND they are the *primary* malware C2 ports — a first pass wrongly listed 443 here, which
+# would have auto-downgraded essentially every real C2 implant to 'medium'. An HTTP/443 beacon to
+# an unknown network must stay 'high'. (The scapy/live fixtures and the eval C2 scenario use 443,
+# and those must remain the strong case they are.)
+_LONG_IDLE_PORTS={25,53,110,143,465,587,993,995,1633,3478,5060,5222,5223,51820,5944,6667,6697,5228}
+# Ports above this are ephemeral client ports unless listed above: a connection TO one is a
+# response returning, i.e. the remote side is the client, so it is not an outbound beacon.
+_EPHEMERAL_FLOOR=1024
+# Outbound browser/service traffic of this size is a page load, not a heartbeat. A C2 beacon
+# sends a small request and a small response, repeatedly, for minutes.
+_BROWSER_MIN_OUTBOUND=1500
 
 def ddos(e,f):
  # Real SYN floods are half-open: many SYNs, few completed handshakes (completion_ratio low).
  # A CI runner / load test that sends 20+ SYNs but COMPLETES them (SF) is not a flood.
  # UDP reflection is judged on volume + source diversity only (no handshake to complete).
  # NOTE: completion_ratio needs response visibility; assumes a SPAN/tap that sees both directions.
+ # mDNS/SSDP/broadcast responders answer the WHOLE subnet with tiny replies, so they hit the
+ # ">=20 packets from >=8 sources to one port" test and read as reflection amplification. Those
+ # are service-discovery chatter, not an attack -> drop them before judging volume.
+ if _is_noise_traffic(e): return
  syn_flood_like=f['syn_count'] >= 20 and f['completion_ratio'] <= .5
  udp_reflect=f['udp_count'] >= 20 and f['unique_sources'] >= 8
  if syn_flood_like or udp_reflect:
   if udp_reflect: subtype='udp_reflection_amplification'
   elif f['source_ip_entropy'] >= 3.5: subtype='spoof_like_source_flood'
   else: subtype='syn_flood'
-  return alert(e,'ddos',subtype,min(1,(f['syn_count']+f['udp_count'])/40),{**f,'aggregation_key':'dst='+e['dst_ip']},['T1498'],'ddos-rules-v1')
+  return alert(e,'ddos',subtype,min(1,(f['syn_count']+f['udp_count'])/40),{**f,'aggregation_key':'dst='+e['dst_ip']},['T1498'],'ddos-rules-v2')
 def c2(e,f):
- # Periodic beaconing to a LOCAL/mesh peer (RFC1918, CGNAT 100.64/10 e.g. Tailscale, multicast)
- # is keepalive noise, not internet C2. Public destinations stay in scope.
+ # --- The core problem, stated honestly -------------------------------------------------
+ # Low-jitter periodicity ALONE cannot separate malware phone-home from a browser keepalive,
+ # an IMAP IDLE, or a push channel. Live capture on a laptop showed ~90% of "C2" alerts were
+ # Chrome/GitHub/Google/WhatsApp keepalives. So a pure timing rule is not a detector, it is a
+ # metronome. Three structural signals are required on top of timing before we claim C2:
+ #   1. the flow must be a client-initiated request to a SERVICE port (a response to an
+ #      ephemeral port is inbound data returning, i.e. the far end is the client, not a server);
+ #   2. the payload must be BEACON-SIZED in both directions (a page load transfers kilobytes;
+ #      a heartbeat transfers a few hundred bytes, over and over);
+ #   3. a known-CDN prefix or a known noisiest service port only DOWNGRADES the alert to
+ #      periodic_session with a lower score -- it never hard-blocks, so an implant tunnelling
+ #      through a CDN IP is still visible, just ranked below an unknown host.
  if _is_local_dest(e['dst_ip']): return
- if _is_noise_traffic(e): return  # mDNS/broadcast/DHCP/NTP/STUN/push-keepalive noise (see _NOISE_PORTS)
- if f['session_count'] >= 5 and f['iat_cv'] <= .12 and f['persistence_seconds'] >= 120 and f['destination_port_count'] <= 2:
-  return alert(e,'c2_beaconing','periodic_beacon',.8,{**f,'aggregation_key':e['src_ip']+'|'+e['dst_ip']},['T1071.001'],'c2-periodicity-v2')
+ if _is_noise_traffic(e): return        # mDNS/broadcast/DHCP/NTP/STUN/push-keepalive noise
+ if not f['session_count'] >= 5 or f['iat_cv'] > .12 or f['persistence_seconds'] < 120 or f['destination_port_count'] > 2: return
+ # 1. direction: a beacon is a REQUEST to a service port. A connection TO an ephemeral port on
+ # a protocol with no idle semantics means we are the server half of someone else's session.
+ port=e.get('dst_port') or 0
+ if port>_EPHEMERAL_FLOOR and port not in _LONG_IDLE_PORTS: return
+ # 2. size: heartbeat-sized exchanges only. Large transfers in either direction are content.
+ if f['mean_outbound_bytes'] > _BROWSER_MIN_OUTBOUND: return
+ if f['inbound_bytes'] > 0 and f['mean_inbound_bytes'] > _BROWSER_MIN_OUTBOUND: return
+ # 3. reputation: downgrade, never suppress. The provider name travels in the evidence so an
+ # analyst can audit the decision instead of trusting an opaque score.
+ from detectors.reputation import describe
+ rep=describe(e['dst_ip']); known=rep['reputation']=='provider' or port in _LONG_IDLE_PORTS
+ if known:
+  why=('destination is a high-volume periodic-infrastructure network' if rep['reputation']=='provider'
+       else 'protocol has a long-lived idle channel (mail/push/VoIP), so periodic exchange is expected')
+  return alert(e,'c2_beaconing','periodic_session',.45,{**f,**rep,'aggregation_key':e['src_ip']+'|'+e['dst_ip'],
+   'downgrade_reason':f'{why}; beacon-sized and low-jitter, but consistent with legitimate keepalive/push/IDLE'},['T1071.001'],'c2-structure-v1')
+ return alert(e,'c2_beaconing','periodic_beacon',.8,{**f,**rep,'aggregation_key':e['src_ip']+'|'+e['dst_ip']},['T1071.001'],'c2-structure-v1')
+# Registrable parents whose subdomains are long/high-entropy by design (CDN cache keys, cloud
+# object hosts). Lexical/ngram DGA scoring is meaningless under these -> skip to avoid FPs.
+_KNOWN_GOOD_PARENTS=('cloudfront.net','amazonaws.com','akamai.net','akamaiedge.net','akamaihd.net',
+ 'fastly.net','fbcdn.net','googleusercontent.com','google.com','gstatic.com','googleapis.com',
+ 'azureedge.net','windows.net','microsoft.com','office.com','apple.com','icloud.com',
+ 'cloudflare.net','cloudflare.com','edgekey.net','edgesuite.net')
+def _known_good_domain(query):
+ q=(query or '').lower().rstrip('.'); return any(q==d or q.endswith('.'+d) for d in _KNOWN_GOOD_PARENTS)
 def dns(e,f):
  # Long, high-entropy labels under trusted CDN/cloud parents (cloudfront.net, *.amazonaws.com,
  # googleusercontent.com, ...) are cache keys / object hosts, not DGA. Skip them.

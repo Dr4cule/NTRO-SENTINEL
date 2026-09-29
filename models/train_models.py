@@ -21,6 +21,14 @@ def main():
  # inside the detector's operating region (alerts start at 5e5 bytes / ratio 5), not just
  # flags everything. Synthetic lab values — replace with real per-network baselines.
  normal=[[random.uniform(1e3,1e6),random.uniform(.2,8)] for _ in range(300)]; exfil=IsolationForest(contamination=.05,random_state=26145).fit(normal);dump(exfil,OUT/'exfil_baseline.joblib')
- import sklearn
- manifest={'training':'generated, labelled lab feature examples only','models':['dga_char_ngrams.joblib','exfil_baseline.joblib'],'seed':26145,'scikit_learn_version':sklearn.__version__,'warning':'No public-dataset performance is claimed.'};(OUT/'training_manifest.json').write_text(json.dumps(manifest,indent=2));print(json.dumps(manifest))
+ import hashlib, sklearn
+ def sha256(p):
+  h=hashlib.sha256()
+  with open(p,'rb') as f:
+   for chunk in iter(lambda: f.read(1<<20), b''): h.update(chunk)
+  return h.hexdigest()
+ # SHA-256 sidecars: models/inference.py refuses to unpickle an artifact whose digest does not
+ # match, so anything able to write MODEL_DIR can no longer smuggle code into the detectors.
+ digests={name: sha256(OUT/name) for name in ('dga_char_ngrams.joblib','exfil_baseline.joblib')}
+ manifest={'training':'generated, labelled lab feature examples only','models':['dga_char_ngrams.joblib','exfil_baseline.joblib'],'seed':26145,'scikit_learn_version':sklearn.__version__,'sha256':digests,'warning':'No public-dataset performance is claimed.'};(OUT/'training_manifest.json').write_text(json.dumps(manifest,indent=2));print(json.dumps(manifest))
 if __name__=='__main__':main()

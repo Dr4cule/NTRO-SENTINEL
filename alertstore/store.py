@@ -5,8 +5,11 @@ from contextlib import closing
 from pathlib import Path
 
 class AlertStore:
- def __init__(self,path=os.getenv('ALERT_DB','artifacts/sentinel.db')):
-  self.path=path; Path(path).parent.mkdir(parents=True,exist_ok=True); self._init()
+ def __init__(self,path=None):
+  # Resolve ALERT_DB at construction, not at import: a default argument would freeze the
+  # value the first time this module is imported, so anything that sets the env var later
+  # (tests, a re-pointed deployment) would silently keep writing to the old file.
+  self.path=path or os.getenv('ALERT_DB','artifacts/sentinel.db'); Path(self.path).parent.mkdir(parents=True,exist_ok=True); self._init()
  def _connect(self):
   con=sqlite3.connect(self.path); con.row_factory=sqlite3.Row
   con.execute('PRAGMA journal_mode=WAL'); con.execute('PRAGMA busy_timeout=5000'); return con

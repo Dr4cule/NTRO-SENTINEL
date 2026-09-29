@@ -1,23 +1,61 @@
 """Optional ML enrichment for the detectors. Every call degrades to None when the
-artifact is missing or was pickled under a different scikit-learn (version gate =
-pickle safety); the caller then falls back to its deterministic rule. Set MODEL_DIR
-to point at a different artifact directory (matches models/train_models.py)."""
+artifact is missing, failed its integrity check, or was pickled under a different
+scikit-learn (version gate = pickle safety); the caller then falls back to its
+deterministic rule. Set MODEL_DIR to point at a different artifact directory (matches
+models/train_models.py)."""
 from pathlib import Path
-import json, os
+import hashlib
+import json
+import os
 
 _ROOT = Path(os.getenv('MODEL_DIR', 'models/artifacts'))
 _cache = {}
 
+
+def _sha256(path):
+    """Streamed digest so a large artifact is never held in memory."""
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _verified(filename):
+    """Return the artifact path only if its SHA-256 matches the manifest sidecar.
+
+    joblib artifacts are pickles: loading one executes its contents, so anything that can
+    write MODEL_DIR is arbitrary code execution. The manifest pins an expected digest, so a
+    swapped or tampered artifact is refused before it is ever unpickled. A missing digest
+    (e.g. artifacts from an older train_models) also fails closed.
+    """
+    path = _ROOT / filename
+    manifest_path = _ROOT / 'training_manifest.json'
+    if not path.is_file() or not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        expected = (manifest.get('sha256') or {}).get(filename)
+        if not expected:
+            return None
+        return path if _sha256(path) == expected else None
+    except Exception:
+        return None
+
+
 def _load(filename):
- """Load a joblib model once, but only if the pickle's sklearn matches ours."""
- if filename not in _cache:
-  try:
-   import sklearn
-   manifest = json.loads((_ROOT / 'training_manifest.json').read_text())
-   if manifest.get('scikit_learn_version') != sklearn.__version__: return None
-   from joblib import load; _cache[filename] = load(_ROOT / filename)
-  except Exception: return None
- return _cache.get(filename)
+    """Load a joblib model once, but only if the digest AND the pickle's sklearn match ours."""
+    if filename not in _cache:
+        try:
+            import sklearn
+            manifest = json.loads((_ROOT / 'training_manifest.json').read_text())
+            if manifest.get('scikit_learn_version') != sklearn.__version__: return None
+            path = _verified(filename)
+            if path is None: return None
+            from joblib import load
+            _cache[filename] = load(path)
+        except Exception: return None
+    return _cache.get(filename)
 
 def dga_score(label):
  """P(DGA) for a DNS label, or None if the char-ngram model is unavailable."""

@@ -11,7 +11,13 @@ services:
       retries: 10
   api:
     build: .
-    environment: {ALERT_DB: /data/sentinel.db}
+    environment:
+      ALERT_DB: /data/sentinel.db
+      # Write endpoints (POST /api/alerts, POST /api/ingest) are CLOSED unless this is set —
+      # compose refuses to start without it. Generate with:
+      #   python3 -c "import secrets;print(secrets.token_urlsafe(32))"
+      SENTINEL_API_TOKEN: ${SENTINEL_API_TOKEN:?set SENTINEL_API_TOKEN in .env or the environment}
+      MAX_UPLOAD_MB: "100"
     volumes: ["./artifacts:/data"]
     ports: ["8000:8000"]
     read_only: true
@@ -22,7 +28,11 @@ services:
   worker:
     build: .
     command: ["python", "-m", "engine.stream_consumer"]
-    environment: {ALERT_DB: /data/sentinel.db, REDIS_URL: redis://redis:6379/0, ARTIFACT_DIR: /data}
+    environment:
+      ALERT_DB: /data/sentinel.db
+      REDIS_URL: redis://redis:6379/0
+      ARTIFACT_DIR: /data
+      MAX_UPLOAD_MB: "100"
     volumes: ["./artifacts:/data"]
     read_only: true
     tmpfs: [/tmp]

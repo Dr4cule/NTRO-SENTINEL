@@ -530,14 +530,31 @@ $("x").addEventListener("click",closeDrawer);$("scrim").addEventListener("click"
 document.addEventListener("keydown",e=>{if(e.key==="Escape")closeDrawer();});
 $("q").addEventListener("input",e=>{Q=e.target.value.trim().toLowerCase();SHOWN=PAGE;renderFeed();});
 
-/* ---------- upload a capture/log for analysis (payload-blind parse -> same store the feed reads) ---------- */
+/* ---------- upload a capture/log for analysis (payload-blind parse -> same store the feed reads) ----------
+   POST /api/ingest is token-gated (api/auth.py). The token is optional: when the server runs
+   without SENTINEL_API_TOKEN the endpoint is closed, so prompt once and keep it in sessionStorage
+   for this tab. Nothing is persisted to disk and it is never sent to a read endpoint. */
+const ingestToken=()=>sessionStorage.getItem("sentinel_api_token")||"";
+const promptToken=()=>{
+  const t=prompt("Ingest API token (SENTINEL_API_TOKEN).\n\nStored in this tab's sessionStorage only; leave blank to cancel.");
+  if(t){sessionStorage.setItem("sentinel_api_token",t.trim());}
+  return t.trim();
+};
+const ingestHeaders=name=>{
+  const h={"X-Filename":name};const t=ingestToken();
+  if(t)h.Authorization=`Bearer ${t}`;
+  return h;
+};
 $("upbtn").addEventListener("click",()=>$("upfile").click());
 $("upfile").addEventListener("change",async e=>{
   const f=e.target.files[0];if(!f)return;
   const btn=$("upbtn"),stat=$("upstat");
   btn.disabled=true;stat.style.color="var(--muted)";stat.textContent=`Analyzing ${f.name}…`;
   try{
-    const r=await fetch("/api/ingest",{method:"POST",headers:{"X-Filename":f.name},body:f});
+    let r=await fetch("/api/ingest",{method:"POST",headers:ingestHeaders(f.name),body:f});
+    if(r.status===503||r.status===401){          // token missing or wrong -> ask once, retry
+      if(promptToken())r=await fetch("/api/ingest",{method:"POST",headers:ingestHeaders(f.name),body:f});
+    }
     const d=await r.json();
     if(!r.ok)throw new Error(d.error||d.detail||r.status);
     if(d.analysis)stat.textContent=`${f.name}: ${d.analysis.rows.toLocaleString()} flows · DDoS share ${d.analysis.ddos_share} · no flow alerts (${d.note||'aggregate only'})`;
