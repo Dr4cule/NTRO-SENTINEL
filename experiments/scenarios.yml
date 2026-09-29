@@ -3,6 +3,8 @@ scenarios:
   - {name: ddos_udp_reflection, label: ddos/udp_reflection_amplification, source: generated metadata-only acceptance scenario}
   - {name: ddos_spoof, label: ddos/spoof_like_source_flood, source: generated metadata-only acceptance scenario}
   - {name: c2, label: c2_beaconing, source: generated metadata-only acceptance scenario}
+  - {name: lateral_c2, label: c2_beaconing/lateral_beacon, source: generated metadata-only acceptance scenario (F-09: internal host beaconing to an internal host on an implant port; generator generate_lateral_c2.py)}
+  - {name: benign_internal, label: benign, source: generated metadata-only acceptance scenario (F-09: AD/DNS, SMB, RDP, NTP, proxy, mesh VPN, broadcast on an internal net; generator generate_benign_internal.py)}
   - {name: dns, label: dga_dns_tunnel, source: generated metadata-only acceptance scenario}
   - {name: encrypted, label: encrypted_malware, source: generated metadata-only acceptance scenario}
   - {name: recon, label: recon_scan, source: generated metadata-only acceptance scenario}

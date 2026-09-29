@@ -5,6 +5,8 @@
 TRAIN_BACKEND ?= docker
 generate:
 	python3 traffic-gen/generators/generate_scenarios.py
+	python3 traffic-gen/generators/generate_lateral_c2.py
+	python3 traffic-gen/generators/generate_benign_internal.py
 demo: generate
 	./scripts/run_demo.sh
 test:

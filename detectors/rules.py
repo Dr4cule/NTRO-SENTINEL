@@ -12,6 +12,11 @@ def _is_local_dest(ip):
  try: a=ipaddress.ip_address(ip); return any(a in n for n in _LOCAL_NETS)
  except ValueError: return False
 
+def _internal_service_port(port):
+ """True for a port that runs a known internal service. These are the destinations that made
+ the blanket RFC1918 skip necessary, and they are why lateral detection keys on the port."""
+ return port in _INTERNAL_SERVICE_PORTS or port in _LONG_IDLE_PORTS
+
 # Registrable parents whose subdomains are long/high-entropy by design (CDN cache keys, cloud
 # object hosts). Lexical/ngram DGA scoring is meaningless under these -> skip to avoid FPs.
 # Live-capture FP lesson (wlp0s20f3, Sep 2026): periodic HTTPS keepalives (Chrome), Google
@@ -44,15 +49,39 @@ def _is_noise_traffic(e):
 # name-regex over the BGP dump matched too much of the internet, so the ASN table is authoritative
 # and carries the provider name into the alert evidence.
 #
-# Ports whose protocol has a LONG-LIVED IDLE by design, so periodic exchange is expected even
-# against an unattributable host: SMTP/IMAP/POP (25,110,143,465,587,993,995,5222,5223,5944),
-# STUN/ICE + push (3478,5228), VoIP/SIP (5060,51820), IRC/XMPP (6667,6697,1633), DNS (53).
+# _INTERNAL_SERVICE_PORTS — services that are periodic-by-design on a LAN. Anything NOT listed
+# is treated as a candidate lateral-C2 port. Two entries are deliberately ABSENT because they
+# are the ports the lateral scenario itself uses, and including them made the allowlist
+# self-contradictory (a first pass listed 4444 and 9001 here while the fixture beaconed on them,
+# which silently disabled the very detection it was meant to permit):
+#   4444  Metasploit default listener
+#   9001  Tor / uncommon service
+# Do not add them back without removing the matching scenario in
+# traffic-gen/generators/generate_lateral_c2.py.
+# The C2 rule used to skip every RFC1918 + CGNAT destination, because real enterprise traffic
+# does that and loosening the address check produced a 118-alert false-positive storm (see
+# experiments/datasets.yml). The cost was that LATERAL C2 - an implant beaconing to 10.x /
+# 192.168.x - was completely invisible. That is a real coverage hole and it is now closed
+# WITHOUT removing the address gate.
 #
-# DELIBERATELY EXCLUDES 443, 8080, 8443, 9300, 9418, 27017, 11211. Those are web/IRC/database
-# ports AND they are the *primary* malware C2 ports — a first pass wrongly listed 443 here, which
-# would have auto-downgraded essentially every real C2 implant to 'medium'. An HTTP/443 beacon to
-# an unknown network must stay 'high'. (The scapy/live fixtures and the eval C2 scenario use 443,
-# and those must remain the strong case they are.)
+# The insight from the fixtures (traffic-gen/generators/generate_benign_internal.py vs
+# generate_lateral_c2.py) is that the two cases are indistinguishable by ADDRESS and
+# indistinguishable by TIMING. They differ only in the DESTINATION PORT:
+#     benign internal : AD/DNS 53, SMB 445, RDP 3389, NTP 123, LDAP 389, mesh VPN 41641 ...
+#     lateral C2      : 4444, 1337, 9001 - ports nothing legitimate runs
+# So internal destinations now pass through the same structural gates, and are only alerted on
+# when the port is NOT part of the known-internal-service profile.
+_INTERNAL_SERVICE_PORTS={
+ 53,67,68,69,88,102,110,111,123,135,137,138,139,143,161,162,177,389,427,443,445,464,465,500,
+ 514,520,546,547,554,587,593,631,636,646,873,989,990,1025,1026,1194,1433,1434,1512,1513,
+ 1521,1723,1900,2049,2404,3268,3269,3306,3389,3690,5060,5222,5352,5353,5355,5432,5672,
+ 5900,5985,5986,5988,6379,6666,6667,6668,6669,6697,7001,7002,8000,8009,8080,8081,8082,8083,
+ 8088,8443,8472,8883,9090,9100,9200,9300,9418,9999,11211,27017,28017,50000,
+ # egress proxies, agent polling, mail relays and RPC that are periodic on an internal net
+ 3128,8080,8118,10000,10009,10050,
+ # mesh / overlay VPNs and remote-access agents that are periodic by design
+ 3478,41641,51820,45000,45001}
+# Ports that are periodic-by-design ANYWHERE (mail/push/VoIP) — used by the internet path too.
 _LONG_IDLE_PORTS={25,53,110,143,465,587,993,995,1633,3478,5060,5222,5223,51820,5944,6667,6697,5228}
 # Ports above this are ephemeral client ports unless listed above: a connection TO one is a
 # response returning, i.e. the remote side is the client, so it is not an outbound beacon.
@@ -90,19 +119,35 @@ def c2(e,f):
  #   3. a known-CDN prefix or a known noisiest service port only DOWNGRADES the alert to
  #      periodic_session with a lower score -- it never hard-blocks, so an implant tunnelling
  #      through a CDN IP is still visible, just ranked below an unknown host.
- if _is_local_dest(e['dst_ip']): return
  if _is_noise_traffic(e): return        # mDNS/broadcast/DHCP/NTP/STUN/push-keepalive noise
  if not f['session_count'] >= 5 or f['iat_cv'] > .12 or f['persistence_seconds'] < 120 or f['destination_port_count'] > 2: return
- # 1. direction: a beacon is a REQUEST to a service port. A connection TO an ephemeral port on
- # a protocol with no idle semantics means we are the server half of someone else's session.
- port=e.get('dst_port') or 0
- if port>_EPHEMERAL_FLOOR and port not in _LONG_IDLE_PORTS: return
  # 2. size: heartbeat-sized exchanges only. Large transfers in either direction are content.
  if f['mean_outbound_bytes'] > _BROWSER_MIN_OUTBOUND: return
  if f['inbound_bytes'] > 0 and f['mean_inbound_bytes'] > _BROWSER_MIN_OUTBOUND: return
+ port=e.get('dst_port') or 0
+ # --- lateral / internal (F-09) -----------------------------------------------------------
+ # An INTERNAL destination is no longer skipped outright. It is judged on the same structural
+ # gates as internet C2, plus one extra requirement: the destination port must not be a known
+ # internal service. Domain controllers, file servers, RDP and mesh VPNs are periodic by
+ # design and are exactly what the old blanket skip protected against; an implant calling an
+ # internal host on 4444/1337/9001 every 60 s is not. Timing is identical in both cases --
+ # the port profile is the whole discriminator, which is why this is safe to enable.
+ #
+ # This MUST be evaluated before the ephemeral-port gate below. 4444, 1337 and 9001 are all
+ # above 1024, so an ephemeral-range check would discard every real lateral beacon.
+ from detectors.reputation import describe
+ if _is_local_dest(e['dst_ip']):
+  if _internal_service_port(port): return
+  return alert(e,'c2_beaconing','lateral_beacon',.85,
+   {**f,'dst_scope':'internal','destination_port':port,'aggregation_key':e['src_ip']+'|'+e['dst_ip'],
+    'rationale':f'periodic low-jitter beacon to an INTERNAL host on port {port}, which is not a known '
+                f'internal service; consistent with lateral command-and-control'},
+   ['T1021'],'c2-lateral-v1')
+ # 1. direction: a beacon is a REQUEST to a service port. A connection TO an ephemeral port on
+ # a protocol with no idle semantics means we are the server half of someone else's session.
+ if port>_EPHEMERAL_FLOOR and port not in _LONG_IDLE_PORTS: return
  # 3. reputation: downgrade, never suppress. The provider name travels in the evidence so an
  # analyst can audit the decision instead of trusting an opaque score.
- from detectors.reputation import describe
  rep=describe(e['dst_ip']); known=rep['reputation']=='provider' or port in _LONG_IDLE_PORTS
  if known:
   why=('destination is a high-volume periodic-infrastructure network' if rep['reputation']=='provider'

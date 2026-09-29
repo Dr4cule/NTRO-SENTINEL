@@ -11,8 +11,8 @@ from pathlib import Path
 from engine.stream_consumer import Pipeline
 
 EXPECTED={
- 'benign':None,'ddos':'ddos','ddos_udp_reflection':'ddos','ddos_spoof':'ddos',
- 'c2':'c2_beaconing','dns':'dga_dns_tunnel','encrypted':'encrypted_malware',
+ 'benign':None,'benign_internal':None,'ddos':'ddos','ddos_udp_reflection':'ddos','ddos_spoof':'ddos',
+ 'c2':'c2_beaconing','lateral_c2':'c2_beaconing','dns':'dga_dns_tunnel','encrypted':'encrypted_malware',
  'recon':'recon_scan','exfil':'exfiltration'}
 SUBTYPES={'ddos':'syn_flood','ddos_udp_reflection':'udp_reflection_amplification','ddos_spoof':'spoof_like_source_flood'}
 
@@ -39,17 +39,22 @@ def confusion_and_precision(rows):
     confusion[r['ground_truth']][pred]=confusion[r['ground_truth']].get(pred,0)+n
     if pred==r['ground_truth']: tp[pred]+=n
  precision={c:round(tp[c]/predicted_total[c],3) if predicted_total[c] else None for c in classes}
- benign=next(r for r in rows if r['ground_truth']=='benign')
+ # Aggregate over EVERY benign scenario. Selecting only the first one would hide false
+ # positives raised by the others, and benign_internal exists specifically to guard the
+ # internal-C2 path - so measuring FPR on 'benign' alone would let that guard fail silently.
+ benign_rows=[r for r in rows if r['ground_truth']=='benign']
+ benign_events=sum(r['events'] for r in benign_rows); benign_alerts=sum(r['alert_count'] for r in benign_rows)
  return {'classes':classes,'confusion_truth_x_pred':confusion,'benign_predicted':dict(benign_pred),
-   'benign_events':benign['events'],'benign_alerts':benign['alert_count'],
-   'benign_false_positive_rate':round(benign['alert_count']/max(1,benign['events']),4),
+   'benign_scenarios':[r['scenario'] for r in benign_rows],
+   'benign_events':benign_events,'benign_alerts':benign_alerts,
+   'benign_false_positive_rate':round(benign_alerts/max(1,benign_events),4),
    'alert_level_precision':precision,
    'note':'Alert-level precision on the controlled corpus (homogeneous scenarios). Flow-level recall/F1 is intentionally not claimed.'}
 
 def main():
- rows=[run(x) for x in EXPECTED]; attack=[x for x in rows if x['ground_truth']!='benign']; benign=next(x for x in rows if x['ground_truth']=='benign')
+ rows=[run(x) for x in EXPECTED]; attack=[x for x in rows if x['ground_truth']!='benign']
  cm=confusion_and_precision(rows)
- out={'evaluation_type':'controlled scenario-level detection coverage','definition':'A scenario is detected when at least one alert has its known target threat class. This is not packet-level precision, recall, or F1.','scenario_results':rows,'confusion':cm,'summary':{'attack_scenarios':len(attack),'detected_attack_scenarios':sum(x['detected'] for x in attack),'benign_alert_count':benign['alert_count'],'benign_false_positive_rate':cm['benign_false_positive_rate'],'ddos_subtype_scenarios_matched':sum(bool(x['subtype_matched']) for x in rows if x['expected_subtype'])}}
+ out={'evaluation_type':'controlled scenario-level detection coverage','definition':'A scenario is detected when at least one alert has its known target threat class. This is not packet-level precision, recall, or F1.','scenario_results':rows,'confusion':cm,'summary':{'attack_scenarios':len(attack),'detected_attack_scenarios':sum(x['detected'] for x in attack),'benign_alert_count':cm['benign_alerts'],'benign_false_positive_rate':cm['benign_false_positive_rate'],'ddos_subtype_scenarios_matched':sum(bool(x['subtype_matched']) for x in rows if x['expected_subtype'])}}
  Path('eval/results.json').write_text(json.dumps(out,indent=2))
  lines=['# Controlled Scenario Evaluation','',out['definition'],'', '| Scenario | Target | Detected | Alerts | Subtype |','|---|---|---:|---:|---|']
  lines += [f"| {x['scenario']} | {x['ground_truth']} | {'yes' if x['detected'] else 'no'} | {x['alert_count']} | {'yes' if x['subtype_matched'] else ('—' if x['subtype_matched'] is None else 'no')} |" for x in rows]

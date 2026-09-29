@@ -472,7 +472,7 @@ a temp dir and asserts the fallback behavior.
 
 | Command | Output | What it measures |
 |---|---|---|
-| `make test` | 125 unit tests | `test_features.py` (13: window eviction, six detection paths, DDoS subtypes + contract shape, benign FPR = 0, dedup, loadtest) · `test_csv_ingest.py` (2: both CSV flavors) · `test_c2_structure.py` (24: structural C2 gates, direction/size/reputation, provider downgrade, fail-open semantics, mDNS-DDoS suppression, and the 443-must-not-downgrade regression guard) · `test_contracts_and_security.py` (~30 **negative** tests: bool/out-of-range/non-numeric confidence, missing/mistyped contract fields, exact `flow_id` keys, duplicate `alert_id` → `IntegrityError` → idempotent, **tampered / deleted / reordered** chain rows → `verify_chain` invalid, correlation suppression, CSV rejection, `Infinity` values, BOM/space headers, upload cap < container memory, auth contract) · `test_models_and_fallbacks.py` (16: train/eval vocabulary disjointness guards, exfil reputation never-silences invariant, encrypted fallback three-signal requirement) · `test_c2_structure.py::ReconFanout` (13: browser-vs-sweep discrimination, port-diversity and provider-spread downgrades, and the boundary guard that a 0.50-failure nmap sweep still fires) · `test_model_integrity.py` (7: manifest digests present and matching disk, stale-leaked-eval guard, missing-dir → None, absent-digest fails closed) · `test_label_join.py` (17: Wilson interval behaviour, label parsing incl. unmapped labels, and the harness's refusal paths — it must decline to report on a thin join, and alert counts must be independent of which IPs are labelled) · `test_api_auth.py` (9 API-level: 503 unconfigured, 401 missing/wrong token, 201 correct, reads open, 413 oversized, 400 empty; skipped if `fastapi`/`httpx` absent) |
+| `make test` | 137 unit tests | `test_features.py` (13: window eviction, six detection paths, DDoS subtypes + contract shape, benign FPR = 0, dedup, loadtest) · `test_csv_ingest.py` (2: both CSV flavors) · `test_c2_structure.py` (24: structural C2 gates, direction/size/reputation, provider downgrade, fail-open semantics, mDNS-DDoS suppression, and the 443-must-not-downgrade regression guard) · `test_contracts_and_security.py` (~30 **negative** tests: bool/out-of-range/non-numeric confidence, missing/mistyped contract fields, exact `flow_id` keys, duplicate `alert_id` → `IntegrityError` → idempotent, **tampered / deleted / reordered** chain rows → `verify_chain` invalid, correlation suppression, CSV rejection, `Infinity` values, BOM/space headers, upload cap < container memory, auth contract) · `test_models_and_fallbacks.py` (16: train/eval vocabulary disjointness guards, exfil reputation never-silences invariant, encrypted fallback three-signal requirement) · `test_c2_structure.py::ReconFanout` (13: browser-vs-sweep discrimination, port-diversity and provider-spread downgrades, and the boundary guard that a 0.50-failure nmap sweep still fires) · `test_model_integrity.py` (7: manifest digests present and matching disk, stale-leaked-eval guard, missing-dir → None, absent-digest fails closed) · `test_lateral_c2.py` (12: lateral beacon detected, benign internal silent, service ports never lateral, implant ports always lateral, structural gates still apply internally, CGNAT still internal, internet path unaffected, FPR aggregation, window robustness) · `test_label_join.py` (17: Wilson interval behaviour, label parsing incl. unmapped labels, and the harness's refusal paths — it must decline to report on a thin join, and alert counts must be independent of which IPs are labelled) · `test_api_auth.py` (9 API-level: 503 unconfigured, 401 missing/wrong token, 201 correct, reads open, 413 oversized, 400 empty; skipped if `fastapi`/`httpx` absent) |
 | `make evaluate` | `eval/results.{json,md}` | Scenario-level coverage, truth×pred confusion, benign FPR, **alert-level** precision |
 | `make loadtest` | `artifacts/loadtest.{json,md}` | In-process paced-replay envelope (~5000 flows/s on a dev box) — **explicitly NOT a PCAP Mbps proof** |
 | `make model-eval` | `models/artifacts/dga_holdout_evaluation.json` | Disjoint generated holdout, P/R/F1 + confusion |
@@ -485,7 +485,7 @@ precision, and its `confusion_and_precision` docstring states flow-level recall/
 alert can cover many flows, so flow-level F1 is not computable from this corpus.
 
 **Current results (re-verified 2026-09-29):** `8/8` attack scenarios detected · benign alerts
-`0` (FPR `0.0`) · DDoS subtype scenarios matched `3/3` · `125/125` tests pass, 0 skips.
+`0` (FPR `0.0`) · DDoS subtype scenarios matched `3/3` · `137/137` tests pass, 0 skips.
 
 **What is NOT claimed** (from `README.md` + `PERFORMANCE.md` + `docs/LIMITATIONS.md`):
 - No scored precision/recall/F1 on external labeled PCAPs — that needs the Zeek Tier-A replay
@@ -720,7 +720,7 @@ python3 -c "import json,sklearn; \
 
 | Item | Value |
 |---|---|
-| Tests | `125/125` pass, 0 skips (13 feature · 2 CSV · 24 C2-structure · 13 recon-fanout · 16 model/exfil/encrypted · 7 model-integrity · ~26 contract/security negative · 9 API auth · 17 external-scoring harness) |
+| Tests | `137/137` pass, 0 skips (13 feature · 2 CSV · 24 C2-structure · 13 recon-fanout · 16 model/exfil/encrypted · 7 model-integrity · ~26 contract/security negative · 9 API auth · 17 external-scoring · 12 lateral-C2) |
 | Eval | `8/8` attack scenarios, benign alerts `0`, FPR `0.0`, DDoS subtypes `3/3` |
 | Hash chain | `valid: true` |
 | ML | **inactive** (artifacts `sklearn 1.6.0` vs runtime `1.8.0`) |
@@ -829,6 +829,52 @@ Running it is now one command once a permitted labelled capture exists:
 python3 -m eval.label_join --pcap capture.pcap --labels labels.csv --attack-ips 172.16.0.1 --window 300
 ```
 
+## 20.2 F-09 — lateral C2 detection (2026-09-29)
+
+`rules.c2` skipped every RFC1918/CGNAT destination, so an implant beaconing to `10.x` /
+`192.168.x` was invisible. The gate was load-bearing — `experiments/datasets.yml` records a
+118-alert false-positive storm when it was loose — so it was closed with **evidence, not by
+removing the check**.
+
+**The insight, from two new fixtures that differ in exactly one dimension:**
+
+| | destination ports |
+|---|---|
+| `generate_benign_internal.py` → `benign_internal.jsonl` | AD/DNS 53, NTP 123, LDAP 389, SMB 445, proxy 3128, RDP 3389, internal web 443, mesh VPN 41641, broadcast |
+| `generate_lateral_c2.py` → `lateral_c2.jsonl` | 4444, 1337, 9001 — nothing legitimate runs these |
+
+Both are internal, both are perfectly periodic (cv = 0), both are heartbeat-sized. **They are
+indistinguishable by address and by timing; only the port profile separates them.** So the change
+is a destination-port allowlist (`_INTERNAL_SERVICE_PORTS`), not a relaxation of the address gate.
+
+Implementation notes that were not obvious:
+
+* **The lateral check runs BEFORE the ephemeral-port gate.** 4444, 1337 and 9001 are all above
+  1024, so the existing direction gate discarded every real lateral beacon. Ordering the
+  internal branch first is what makes this work at all.
+* **The allowlist had to be curated against the fixture.** A first pass listed `4444` and `9001`
+  as internal services — the exact ports the lateral scenario beacons on — so the change
+  silently disabled the detection it was meant to enable, and the fixture reported 0. That
+  self-contradiction is now called out in a comment above the list.
+* **`features/c2_beacon.py` had no ordering guard.** The window is keyed on `(src, dst)` and
+  evicted by time, so interleaving cadences (or a late event) left timestamps unsorted and
+  produced **negative `persistence_seconds`** and an exploding `iat_cv` — which disables detection
+  silently rather than raising. It now sorts non-monotonic windows and floors persistence at 0.
+* **`eval.run_suite` measured FPR on only the FIRST benign scenario** (`benign=next(...)`). With
+  `benign_internal` added, false positives in it would have been invisible. FPR now aggregates
+  across every benign scenario, and a test injects FPs into `benign_internal` to prove the
+  aggregate bites.
+
+**Result:** `lateral_c2` fixture 0 → 4 alerts (`lateral_beacon`, high, **T1021** — lateral
+movement, not web C2); `benign_internal` stays at 0; internet C2 unchanged; eval 8/8 → **9/9**
+attack scenarios with FPR still **0.0**.
+
+**Residual limits, stated plainly:** a beacon to an internal host on a port that legitimately runs
+a service (443/8080/8443) is still not flagged — internal web traffic is indistinguishable from
+internal C2 on port alone, and separating them needs host-role or asset context Sentinel does not
+have. The allowlist is static, so an environment running an unusual service on 1337/4444/9001
+would see false positives.
+
 ## 21. Suggested next steps, in priority order
 
 Items 1–3 below are **done** (see §15.1, §20); the list is retained so the reasoning behind
@@ -852,5 +898,5 @@ each fix stays discoverable.
 7. **Hash-pinned lockfile** (`pip-compile --generate-hashes`) plus a `pip-audit` CI step, rather
    than the unverified version numbers in the original review.
 8. **Multi-worker HTTP server in `preview_server.py`** to eliminate the single-threaded wedge (§10).
-9. **F-09 (lateral C2):** loosen the RFC1918/CGNAT skip only alongside a second signal —
-   host-role, port profile or DNS context. Never on its own; §20 explains the 118-alert storm.
+9. ~~F-09 (lateral C2)~~ — **DONE** (§20.2) via a destination-port profile, with a benign-internal
+   fixture proving quietness. Residual: internal C2 on a legitimate service port is still invisible.
