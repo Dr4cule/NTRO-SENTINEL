@@ -1,0 +1,82 @@
+{
+  "compact": {
+    "logreg": {
+      "n": 1000,
+      "accuracy": 0.953,
+      "benign_precision": 0.9978,
+      "benign_recall": 0.908,
+      "benign_f1": 0.9508,
+      "attack_precision": 0.9156,
+      "attack_recall": 0.998,
+      "attack_f1": 0.955,
+      "macro_f1": 0.9529,
+      "false_positive_rate": 0.092,
+      "false_negative_rate": 0.002,
+      "confusion": {
+        "tn_benign_ok": 454,
+        "fp_benign_as_attack": 46,
+        "fn_attack_as_benign": 1,
+        "tp_attack_ok": 499
+      }
+    },
+    "random_forest": {
+      "n": 1000,
+      "accuracy": 0.998,
+      "benign_precision": 0.996,
+      "benign_recall": 1.0,
+      "benign_f1": 0.998,
+      "attack_precision": 1.0,
+      "attack_recall": 0.996,
+      "attack_f1": 0.998,
+      "macro_f1": 0.998,
+      "false_positive_rate": 0.0,
+      "false_negative_rate": 0.004,
+      "confusion": {
+        "tn_benign_ok": 500,
+        "fp_benign_as_attack": 0,
+        "fn_attack_as_benign": 2,
+        "tp_attack_ok": 498
+      }
+    }
+  },
+  "broad": {
+    "logreg": {
+      "n": 1000,
+      "accuracy": 0.988,
+      "benign_precision": 1.0,
+      "benign_recall": 0.976,
+      "benign_f1": 0.9879,
+      "attack_precision": 0.9766,
+      "attack_recall": 1.0,
+      "attack_f1": 0.9881,
+      "macro_f1": 0.988,
+      "false_positive_rate": 0.024,
+      "false_negative_rate": 0.0,
+      "confusion": {
+        "tn_benign_ok": 488,
+        "fp_benign_as_attack": 12,
+        "fn_attack_as_benign": 0,
+        "tp_attack_ok": 500
+      }
+    },
+    "random_forest": {
+      "n": 1000,
+      "accuracy": 0.999,
+      "benign_precision": 0.998,
+      "benign_recall": 1.0,
+      "benign_f1": 0.999,
+      "attack_precision": 1.0,
+      "attack_recall": 0.998,
+      "attack_f1": 0.999,
+      "macro_f1": 0.999,
+      "false_positive_rate": 0.0,
+      "false_negative_rate": 0.002,
+      "confusion": {
+        "tn_benign_ok": 500,
+        "fp_benign_as_attack": 0,
+        "fn_attack_as_benign": 1,
+        "tp_attack_ok": 499
+      }
+    }
+  }
+}

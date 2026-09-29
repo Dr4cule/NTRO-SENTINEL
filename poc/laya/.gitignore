@@ -1,0 +1,6 @@
+# Laya POC — keep the repo clean. The venv (torch+CUDA, ~3 GB) and regenerable
+# split pickles must never be committed. Keep the small JSON/CSV/md evidence.
+.venv/
+__pycache__/
+*.pyc
+data/*.pkl
