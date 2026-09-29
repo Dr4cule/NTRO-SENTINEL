@@ -1,0 +1,29 @@
+[Unit]
+Description=NTRO Sentinel test peer (terminates exfil/C2 flows inside netns ntro-peer)
+After=ntro-testsegment.service
+Requires=ntro-testsegment.service
+
+[Service]
+Type=simple
+# Runs as root ONLY to call setns() into the ntro-peer namespace (ip netns exec needs
+# CAP_SYS_ADMIN). It is a test fixture that binds two ports and discards data; it is not part
+# of the detection or storage path. The two services that matter -- ntro-ingest (the sensor)
+# and ntro-api (the dashboard) -- both stay on the unprivileged sentinel user.
+User=root
+WorkingDirectory=/opt/ntro-sentinel
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/sbin/ip netns exec ntro-peer /opt/ntro-sentinel/.venv/bin/python /opt/ntro-sentinel/tools/sink.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/ntro-sentinel/sink.log
+StandardError=append:/var/log/ntro-sentinel/sink.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+/var/log/ntro-sentinel/*.log {
+    weekly
+    rotate 8
+    maxsize 50M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su sentinel sentinel
+    create 0664 sentinel sentinel
+}

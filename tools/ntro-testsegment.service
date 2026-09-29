@@ -1,0 +1,16 @@
+[Unit]
+Description=NTRO Sentinel test segment (veth pair, monitored end = veth-mon)
+Documentation=file:///opt/ntro-sentinel/tools/setup_test_segment.sh
+Before=ntro-ingest.service
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/ntro-sentinel/tools/setup_test_segment.sh
+StandardOutput=append:/var/log/ntro-sentinel/segment.log
+StandardError=append:/var/log/ntro-sentinel/segment.log
+
+[Install]
+WantedBy=multi-user.target

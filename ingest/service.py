@@ -32,6 +32,14 @@ def consumer(q, store, pipeline, metrics, stop=STOP):
     """The ONLY writer to the store -> hash chain stays consistent. `stop` defaults to the
     global STOP (live/CLI runs); an upload passes its own event so repeated calls are isolated."""
     last_metric = 0.0
+    def _telemetry(**kw):
+        # A telemetry write must never be able to kill the only consumer thread. It used to be
+        # unguarded, so one failed INSERT (e.g. the store's -wal file briefly unwritable) raised
+        # here, unwound the thread, and left the process alive and "active" while ingesting
+        # NOTHING -- systemd saw a healthy service, so nothing ever restarted it. Telemetry is
+        # observability, not detection: degrade it loudly on stderr, keep detecting.
+        try: store.metric(**kw)
+        except Exception as ex: print(f'[service] telemetry write failed (detection continues): {ex!r}', file=sys.stderr)
     while not (stop.is_set() and q.empty()):
         try: e = q.get(timeout=.5)
         except queue.Empty: continue
@@ -40,9 +48,9 @@ def consumer(q, store, pipeline, metrics, stop=STOP):
         for a in alerts: store.append(a)
         metrics.observe((time.perf_counter() - t) * 1000, len(alerts))
         now = time.time()
-        if now - last_metric >= 2: store.metric(**metrics.snapshot()); last_metric = now
+        if now - last_metric >= 2: _telemetry(**metrics.snapshot()); last_metric = now
         q.task_done()
-    store.metric(**metrics.snapshot())
+    _telemetry(**metrics.snapshot())
 
 def ingest_file(path, q, suffix=None):
     """Replay a pcap, endpoint-CSV, or line-delimited Zeek/event JSON file into the queue.
@@ -72,6 +80,8 @@ def ingest_file(path, q, suffix=None):
     print(f'[file] ingested {p}', file=sys.stderr)
 
 _UPLOAD_LOCK = threading.Lock()
+# how long an upload may spend draining its queue before we call it stalled (see below)
+_UPLOAD_DRAIN_SECONDS = int(os.getenv('UPLOAD_DRAIN_SECONDS', '300'))
 # The old 300MB cap was larger than the api container's own 256M memory limit, so a large
 # upload could only ever OOM-kill the process. Default is now comfortably under it, and the
 # body is streamed to disk (never fully buffered) in ingest.api/main.py.
@@ -108,7 +118,19 @@ def ingest_upload_path(filename, path):
         before = store.summary()['total_alerts']
         q = queue.Queue(maxsize=100000); stop = threading.Event()
         ct = threading.Thread(target=consumer, args=(q, store, pipeline, metrics, stop), daemon=True); ct.start()
-        try: ingest_file(path, q, suffix=suffix); q.join()
+        try:
+            ingest_file(path, q, suffix=suffix)
+            # Bounded drain. A bare q.join() waits forever if the consumer dies -- and it dies
+            # on any store write error, because append() runs unguarded in its loop. That held
+            # _UPLOAD_LOCK for good, so one unwritable store turned EVERY later upload into a
+            # hang rather than an error. Wait with a deadline and fail loudly instead.
+            deadline = time.time() + _UPLOAD_DRAIN_SECONDS
+            while q.unfinished_tasks and time.time() < deadline and ct.is_alive():
+                time.sleep(.1)
+            if q.unfinished_tasks:
+                raise RuntimeError(
+                    f'ingest stalled: {q.unfinished_tasks} event(s) unprocessed '
+                    f'(consumer_alive={ct.is_alive()})')
         finally: stop.set(); ct.join(timeout=60)
         total = store.summary()['total_alerts']
     return {'file': name, 'alerts_added': total - before, 'total_alerts': total}
@@ -168,7 +190,9 @@ class LiveCapture:
 
 def main():
     ap = argparse.ArgumentParser(description='24/7 ingest: live capture + file replay -> dashboard')
-    ap.add_argument('--live', metavar='IFACE', help='sniff this interface continuously (needs root)')
+    ap.add_argument('--live', metavar='IFACE', action='append', default=[],
+                    help='sniff this interface continuously, needs root (repeatable: a real sensor '
+                         'watches a mirror port plus any local test segment)')
     ap.add_argument('--watch', metavar='DIR', help='watch dir for drop-in pcap/jsonl files')
     ap.add_argument('--file', action='append', default=[], help='ingest a file now (repeatable)')
     ap.add_argument('--once', action='store_true', help='ingest --file args, then exit (no live/watch)')
@@ -181,21 +205,33 @@ def main():
         q.join(); STOP.set(); ct.join(timeout=10)
         print(f'[service] done: {store.summary()["total_alerts"]} alerts in store', file=sys.stderr); return
     if args.watch: threading.Thread(target=watch_inbox, args=(args.watch, q, set()), daemon=True).start()
-    live = None
-    if args.live:
-        live = LiveCapture(args.live, q)
-        try: live.start()
-        except Exception as ex: print(f'[live] disabled: {ex}', file=sys.stderr); live = None
+    lives = []
+    for iface in args.live:
+        lc = LiveCapture(iface, q)
+        try: lc.start()
+        except Exception as ex: print(f'[live] disabled: {ex}', file=sys.stderr)
+        else: lives.append(lc)
+    if args.live and not lives: print('[live] NO interface is capturing — nothing will ever be detected', file=sys.stderr)
     print('[service] running — Ctrl-C to stop. Dashboard: http://localhost:8000', file=sys.stderr)
     try:
-        while True: time.sleep(1)
+        while True:
+            time.sleep(1)
+            # The consumer is the only writer and the only thing that drains the queue. If it
+            # dies (a store write it cannot recover from, say), the main loop would happily
+            # keep sleeping and the process would look perfectly healthy to systemd while
+            # ingesting nothing -- the worst possible failure for a sensor, because nothing
+            # restarts it. Exit instead and let the unit's Restart=always bring it back.
+            if not ct.is_alive():
+                print('[service] consumer thread died — exiting so systemd restarts the sensor', file=sys.stderr)
+                os._exit(1)
     except KeyboardInterrupt:
         print('\n[service] draining…', file=sys.stderr); STOP.set()
-        if live and live.sniffer:
-            try: live.sniffer.stop()  # scapy can't always stop an AsyncSniffer socket cleanly
-            except Exception:
-                exc = getattr(live.sniffer, 'exception', None)
-                if exc: print(f'[live] sniffer error: {exc!r}', file=sys.stderr)
+        for lc in lives:
+            if lc.sniffer:
+                try: lc.sniffer.stop()  # scapy can't always stop an AsyncSniffer socket cleanly
+                except Exception:
+                    exc = getattr(lc.sniffer, 'exception', None)
+                    if exc: print(f'[live] sniffer error on {lc.iface}: {exc!r}', file=sys.stderr)
         ct.join(timeout=5)  # daemon sniffer thread dies with us; bounded drain won't hang on a live socket
 
 if __name__ == '__main__':

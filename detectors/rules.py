@@ -99,7 +99,15 @@ def ddos(e,f):
  # ">=20 packets from >=8 sources to one port" test and read as reflection amplification. Those
  # are service-discovery chatter, not an attack -> drop them before judging volume.
  if _is_noise_traffic(e): return
- syn_flood_like=f['syn_count'] >= 20 and f['completion_ratio'] <= .5
+ # PORT CONCENTRATION - a volumetric attack has a SHAPE: it hammers a handful of ports (usually
+ # one service) from many sources. A single-source sweep of many distinct ports is a port scan
+ # (T1046), and volume alone cannot tell them apart: `nmap -p 1-60` against one host sends 60+ SYNs
+ # in a burst with almost no completed handshakes, which satisfies the pure volume test exactly.
+ # That misfiled every inbound scan as T1498. So require the burst to be concentrated: a real
+ # flood collapses onto few ports, a scan fans out across many. Falls back to concentrated when
+ # the key is absent, so a caller that builds features by hand keeps the previous behaviour.
+ concentrated=f.get('unique_dst_ports',1) <= 3
+ syn_flood_like=f['syn_count'] >= 20 and f['completion_ratio'] <= .5 and concentrated
  udp_reflect=f['udp_count'] >= 20 and f['unique_sources'] >= 8
  if syn_flood_like or udp_reflect:
   if udp_reflect: subtype='udp_reflection_amplification'

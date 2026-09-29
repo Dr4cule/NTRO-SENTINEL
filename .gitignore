@@ -13,3 +13,11 @@ artifacts/zeek-live-*/
 traffic-gen/pcaps/*.pcap
 .claude/
 NTRO-Cyber-Threat-Detection-*.md
+# local deployment / tooling noise
+.venv/
+.cache/
+models/numeric_feats.pyc
+artifacts/*.bak
+artifacts/sentinel.db-wal
+artifacts/sentinel.db-shm
+tools/backup/

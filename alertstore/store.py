@@ -1,6 +1,6 @@
 """Local append-only forensic alert store with a tamper-evident hash chain."""
 from __future__ import annotations
-import hashlib, json, os, sqlite3
+import hashlib, json, os, sqlite3, time
 from contextlib import closing
 from pathlib import Path
 
@@ -11,8 +11,22 @@ class AlertStore:
   # (tests, a re-pointed deployment) would silently keep writing to the old file.
   self.path=path or os.getenv('ALERT_DB','artifacts/sentinel.db'); Path(self.path).parent.mkdir(parents=True,exist_ok=True); self._init()
  def _connect(self):
-  con=sqlite3.connect(self.path); con.row_factory=sqlite3.Row
-  con.execute('PRAGMA journal_mode=WAL'); con.execute('PRAGMA busy_timeout=5000'); return con
+  con=sqlite3.connect(self.path,timeout=30.0); con.row_factory=sqlite3.Row; con.isolation_level=None
+  con.execute('PRAGMA journal_mode=WAL'); con.execute('PRAGMA busy_timeout=30000'); con.execute('PRAGMA synchronous=NORMAL'); return con
+
+ def _begin_immediate(self,con,attempts=60):
+  """Take the write lock up front, retrying while another writer holds it.
+
+  BEGIN IMMEDIATE makes the read of the chain head and the insert that extends it atomic
+  against every other process. Without it sqlite3 runs the SELECT in autocommit (no lock
+  held), then opens the write transaction only at the INSERT — so two writers (e.g. the
+  live-capture consumer and a concurrent API upload) can read the SAME head and both chain
+  from it, silently forking the chain and failing verify_chain()."""
+  for i in range(attempts):
+   try: con.execute('BEGIN IMMEDIATE'); return True
+   except sqlite3.OperationalError:
+    if i==attempts-1: raise
+    time.sleep(0.25)
  def _init(self):
   with closing(self._connect()) as con:
    con.executescript('''CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY AUTOINCREMENT,alert_id TEXT UNIQUE NOT NULL,timestamp TEXT NOT NULL,threat_class TEXT NOT NULL,severity TEXT NOT NULL,confidence REAL NOT NULL,src_ip TEXT,dst_ip TEXT,record_json TEXT NOT NULL,prev_hash TEXT NOT NULL,record_hash TEXT NOT NULL);
@@ -21,10 +35,13 @@ class AlertStore:
  def append(self,record):
   canonical=json.dumps(record,sort_keys=True,separators=(',',':'))
   with closing(self._connect()) as con:
-   row=con.execute('SELECT record_hash FROM alerts ORDER BY seq DESC LIMIT 1').fetchone(); previous=row['record_hash'] if row else '0'*64; digest=hashlib.sha256((previous+canonical).encode()).hexdigest()
+   self._begin_immediate(con)
    try:
-    con.execute('INSERT INTO alerts (alert_id,timestamp,threat_class,severity,confidence,src_ip,dst_ip,record_json,prev_hash,record_hash) VALUES (?,?,?,?,?,?,?,?,?,?)',(record['alert_id'],record['timestamp'],record['threat_class'],record['severity'],record['confidence'],record['flow_id']['src_ip'],record['flow_id']['dst_ip'],canonical,previous,digest)); con.commit(); return True
-   except sqlite3.IntegrityError: return False
+    row=con.execute('SELECT record_hash FROM alerts ORDER BY seq DESC LIMIT 1').fetchone(); previous=row['record_hash'] if row else '0'*64; digest=hashlib.sha256((previous+canonical).encode()).hexdigest()
+    con.execute('INSERT INTO alerts (alert_id,timestamp,threat_class,severity,confidence,src_ip,dst_ip,record_json,prev_hash,record_hash) VALUES (?,?,?,?,?,?,?,?,?,?)',(record['alert_id'],record['timestamp'],record['threat_class'],record['severity'],record['confidence'],record['flow_id']['src_ip'],record['flow_id']['dst_ip'],canonical,previous,digest))
+    con.execute('COMMIT'); return True
+   except sqlite3.IntegrityError:
+    con.execute('ROLLBACK'); return False
  def list(self,threat_class=None,severity=None,limit=250):
   sql='SELECT record_json FROM alerts WHERE 1=1'; values=[]
   if threat_class: sql+=' AND threat_class=?'; values.append(threat_class)
@@ -44,6 +61,10 @@ class AlertStore:
     previous=actual; checked+=1
   return {'valid':True,'checked':checked,'head_hash':previous}
  def metric(self,**d):
-  with closing(self._connect()) as con: con.execute('INSERT INTO telemetry_metrics VALUES(?,?,?,?,?,?)',(d['metric_ts'],d['events_total'],d['alerts_total'],d.get('stream_lag',0),d.get('p95_latency_ms'),d.get('throughput_eps',0)));con.commit()
+  with closing(self._connect()) as con:
+   self._begin_immediate(con)
+   try:
+    con.execute('INSERT INTO telemetry_metrics VALUES(?,?,?,?,?,?)',(d['metric_ts'],d['events_total'],d['alerts_total'],d.get('stream_lag',0),d.get('p95_latency_ms'),d.get('throughput_eps',0))); con.execute('COMMIT')
+   except sqlite3.IntegrityError: con.execute('ROLLBACK')
 
 JsonlAlertStore=AlertStore

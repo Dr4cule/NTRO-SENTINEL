@@ -3,3 +3,7 @@ uvicorn==0.34.0
 redis==5.2.1
 scikit-learn==1.6.0
 joblib==1.4.2
+# uvicorn's /ws/alerts upgrade backend. Optional at import time, but without it uvicorn
+# resolves --ws auto to "none" and every WebSocket handshake 404s, so the dashboard silently
+# loses its live push feed. Pin it so a fresh install matches the running service.
+websockets==17.1
