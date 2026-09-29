@@ -69,7 +69,10 @@ Everything below is built, wired end-to-end, and runnable today:
 Honest gaps (not yet done, by design — measure it or don't claim it):
 
 - Scored **precision/recall/F1 on external labeled PCAPs** needs the Zeek Tier-A replay + dataset label-join.
-- No external-network **Mbps throughput** benchmark is claimed (the load test is an in-process envelope).
+- **Sustained throughput is ~1,000-1,500 events/s per process**, not the 5,000 eps in the older
+  loadtest artifact (that run measured a near-empty pipeline and does not reproduce). The current
+  ceiling is an O(n²) timestamp rebuild in the C2 feature extractor. All throughput evidence is
+  synthetic/replayed metadata, not sustained PCAP on a real link — see `context.md` §22.6.
 - `encrypted_malware` is not exercised on the offline path (no JA3/TLS derived without Zeek).
 
 ## Architecture
