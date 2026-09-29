@@ -306,8 +306,8 @@
         <div><h3>Live detection feed</h3><span class="sub">select an alert to inspect the exact detector evidence</span></div>
         <div class="feedtools">
           <input id="q" class="search" type="search" placeholder="Search ip · class · evidence" autocomplete="off" spellcheck="false" aria-label="Search alerts">
-          <input id="upfile" type="file" accept=".pcap,.pcapng,.cap,.jsonl,.json,.log" hidden>
-          <button id="upbtn" class="upload" type="button" title="Analyze a pcap or Zeek/JSONL log — parsed payload-blind and added to the store">Upload capture</button>
+          <input id="upfile" type="file" accept=".pcap,.pcapng,.cap,.csv,.jsonl,.json,.log" hidden>
+          <button id="upbtn" class="upload" type="button" title="Analyze a pcap, flow CSV or Zeek/JSONL log — parsed payload-blind and added to the store">Upload capture</button>
           <span id="upstat" class="upstat" role="status" aria-live="polite"></span>
         </div>
       </div>
@@ -540,7 +540,9 @@ $("upfile").addEventListener("change",async e=>{
     const r=await fetch("/api/ingest",{method:"POST",headers:{"X-Filename":f.name},body:f});
     const d=await r.json();
     if(!r.ok)throw new Error(d.error||d.detail||r.status);
-    stat.style.color="#0f6f57";stat.textContent=`+${d.alerts_added} alerts · ${d.total_alerts} total`;
+    if(d.analysis)stat.textContent=`${f.name}: ${d.analysis.rows.toLocaleString()} flows · DDoS share ${d.analysis.ddos_share} · no flow alerts (${d.note||'aggregate only'})`;
+    else stat.textContent=`+${d.alerts_added} alerts · ${d.total_alerts} total`;
+    stat.style.color="#0f6f57";
     await load();
   }catch(err){stat.style.color="var(--sev-crit)";stat.textContent=`Upload failed: ${err.message}`;}
   finally{btn.disabled=false;e.target.value="";}

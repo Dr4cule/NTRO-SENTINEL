@@ -6,8 +6,11 @@ dashboard already reads, so alerts show up live (WebSocket polls the store every
 
 Sources (any combination, run together):
   --live IFACE     sniff a NIC continuously (needs root / CAP_NET_RAW)
-  --watch DIR      drop .pcap/.pcapng or .jsonl/Zeek-json files in; ingested then moved to processed/
+  --watch DIR      drop .pcap/.pcapng/.csv or .jsonl/Zeek-json files in; ingested then moved to processed/
   --file PATH      ingest a file now (repeatable); with --once, ingest those and exit
+  CSVs come in two flavors (ingest/csv_to_events.py): endpoint-bearing -> conn events
+  through the normal Pipeline; endpoint-less CIC-style aggregates -> honest traffic
+  assessment only (no fabricated flow alerts).
 
   python -m ingest.service --file capture.pcap --once          # one-shot: populate dashboard, exit
   python -m ingest.service --live eth0 --watch artifacts/inbox # 24/7: live + drop-in files
@@ -41,10 +44,22 @@ def consumer(q, store, pipeline, metrics, stop=STOP):
     store.metric(**metrics.snapshot())
 
 def ingest_file(path, q):
-    """Replay a pcap or a line-delimited Zeek/event JSON file into the queue."""
+    """Replay a pcap, endpoint-CSV, or line-delimited Zeek/event JSON file into the queue.
+
+    Returns None, or the aggregate-analysis dict for endpoint-less CSVs (which yield
+    no per-flow events by design)."""
     p = Path(path)
     if p.suffix.lower() in PCAP_EXT:
         for e in build_events(str(p), int(os.getenv('MAX_PACKETS', '2000000'))): q.put(e)
+    elif p.suffix.lower() == '.csv':
+        from ingest.csv_to_events import read_conn_events, analyze_aggregate
+        try:
+            for e in read_conn_events(str(p), int(os.getenv('MAX_CSV_ROWS', '2000000'))): q.put(e)
+        except ValueError:
+            info = analyze_aggregate(str(p), int(os.getenv('MAX_CSV_ROWS', '2000000')))
+            print(f"[csv] aggregate-only {p.name}: {info['rows']} flows, "
+                  f"DDoS share {info['ddos_share']}, top ports {info['top_destination_ports'][:3]}", file=sys.stderr)
+            return info
     else:
         with p.open() as f:
             for line in f:
@@ -64,7 +79,26 @@ def ingest_upload(filename, data):
     if len(data) > MAX_UPLOAD_BYTES: raise ValueError(f'upload exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB cap')
     name = Path(filename or 'upload.jsonl').name
     suffix = Path(name).suffix.lower()
-    if suffix not in PCAP_EXT and suffix not in {'.jsonl', '.json', '.log'}: suffix = '.jsonl'  # unknown -> line-json
+    if suffix == '.csv':
+        from ingest.csv_to_events import read_conn_events, analyze_aggregate, has_endpoints
+        import csv as _csv
+        with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as tf:
+            tf.write(data); tmp = tf.name
+        try:
+            with open(tmp, newline='', encoding='utf-8-sig') as f:
+                headers = _csv.DictReader(f).fieldnames
+            if not has_endpoints(headers):
+                with _UPLOAD_LOCK:
+                    before = AlertStore().summary()['total_alerts']
+                    info = analyze_aggregate(tmp, int(os.getenv('MAX_CSV_ROWS', '2000000')))
+                return {'file': name, 'alerts_added': 0, 'total_alerts': before,
+                        'analysis': info,
+                        'note': 'Endpoint-less aggregate CSV: assessment only, no flow alerts (see analysis).'}
+        finally:
+            try: os.unlink(tmp)
+            except OSError: pass
+        suffix = '.csv'  # endpoint-bearing -> fall through to the queue path below
+    if suffix not in PCAP_EXT and suffix not in {'.jsonl', '.json', '.log', '.csv'}: suffix = '.jsonl'  # unknown -> line-json
     with _UPLOAD_LOCK:
         store, pipeline, metrics = AlertStore(), Pipeline(), StreamMetrics()
         before = store.summary()['total_alerts']
@@ -79,7 +113,7 @@ def ingest_upload(filename, data):
 
 def watch_inbox(inbox, q, seen):
     box = Path(inbox); (box / 'processed').mkdir(parents=True, exist_ok=True)
-    print(f'[watch] drop pcap/jsonl into {box}', file=sys.stderr)
+    print(f'[watch] drop pcap/csv/jsonl into {box}', file=sys.stderr)
     while not STOP.is_set():
         for p in sorted(box.glob('*')):
             if p.is_file() and p.name not in seen:

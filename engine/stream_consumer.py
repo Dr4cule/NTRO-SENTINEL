@@ -17,6 +17,10 @@ from alertstore.store import AlertStore
 class Pipeline:
  def __init__(self):
   self.features={'ddos':DDoSFeatures(),'c2':C2Features(),'dns':DNSFeatures(),'tls':TLSFeatures(),'recon':ReconFeatures(),'exfil':ExfilFeatures()}; self.correlation=Correlator(); self.emitted={}
+  # Per-threat dedup windows: C2 beacons persist for the full 300s feature window, so a 30s
+  # dedup re-emits the same beacon ~10x (live-spam seen Sep 2026: 9 alerts per agg key).
+  # 300s collapses each beacon to one alert; bursty classes (ddos/recon) stay at 30s.
+  self.dedup_windows={'c2_beaconing':300}
  def process(self,e):
   ts=float(e.get('ts',time.time())); candidates=[]
   if e.get('kind') in ('conn','early_event'):
@@ -26,7 +30,8 @@ class Pipeline:
   fresh=[]
   for item in (x for x in candidates if x):
    evidence=item['supporting_evidence']; key=(item['threat_class'],item['subtype'],evidence.get('aggregation_key',item['flow_id']['src_ip']+'|'+item['flow_id']['dst_ip']))
-   if ts-self.emitted.get(key,float('-inf'))>=30: self.emitted[key]=ts;fresh.append(item)
+   window=self.dedup_windows.get(item['threat_class'],30)
+   if ts-self.emitted.get(key,float('-inf'))>=window: self.emitted[key]=ts;fresh.append(item)
   return fresh + self.correlation.process(fresh)
 
 def redis_worker(redis_url=os.getenv('REDIS_URL','redis://redis:6379/0'), stream='telemetry', group='sentinel', consumer='worker-1'):
