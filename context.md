@@ -470,7 +470,7 @@ a temp dir and asserts the fallback behavior.
 
 | Command | Output | What it measures |
 |---|---|---|
-| `make test` | 108 unit tests | `test_features.py` (13: window eviction, six detection paths, DDoS subtypes + contract shape, benign FPR = 0, dedup, loadtest) · `test_csv_ingest.py` (2: both CSV flavors) · `test_c2_structure.py` (24: structural C2 gates, direction/size/reputation, provider downgrade, fail-open semantics, mDNS-DDoS suppression, and the 443-must-not-downgrade regression guard) · `test_contracts_and_security.py` (~30 **negative** tests: bool/out-of-range/non-numeric confidence, missing/mistyped contract fields, exact `flow_id` keys, duplicate `alert_id` → `IntegrityError` → idempotent, **tampered / deleted / reordered** chain rows → `verify_chain` invalid, correlation suppression, CSV rejection, `Infinity` values, BOM/space headers, upload cap < container memory, auth contract) · `test_models_and_fallbacks.py` (16: train/eval vocabulary disjointness guards, exfil reputation never-silences invariant, encrypted fallback three-signal requirement) · `test_c2_structure.py::ReconFanout` (8: browser-vs-sweep discrimination, port-diversity and provider-spread downgrades, and the boundary guard that a 0.50-failure nmap sweep still fires) · `test_model_integrity.py` (7: manifest digests present and matching disk, stale-leaked-eval guard, missing-dir → None, absent-digest fails closed) · `test_api_auth.py` (9 API-level: 503 unconfigured, 401 missing/wrong token, 201 correct, reads open, 413 oversized, 400 empty; skipped if `fastapi`/`httpx` absent) |
+| `make test` | 110 unit tests | `test_features.py` (13: window eviction, six detection paths, DDoS subtypes + contract shape, benign FPR = 0, dedup, loadtest) · `test_csv_ingest.py` (2: both CSV flavors) · `test_c2_structure.py` (24: structural C2 gates, direction/size/reputation, provider downgrade, fail-open semantics, mDNS-DDoS suppression, and the 443-must-not-downgrade regression guard) · `test_contracts_and_security.py` (~30 **negative** tests: bool/out-of-range/non-numeric confidence, missing/mistyped contract fields, exact `flow_id` keys, duplicate `alert_id` → `IntegrityError` → idempotent, **tampered / deleted / reordered** chain rows → `verify_chain` invalid, correlation suppression, CSV rejection, `Infinity` values, BOM/space headers, upload cap < container memory, auth contract) · `test_models_and_fallbacks.py` (16: train/eval vocabulary disjointness guards, exfil reputation never-silences invariant, encrypted fallback three-signal requirement) · `test_c2_structure.py::ReconFanout` (8: browser-vs-sweep discrimination, port-diversity and provider-spread downgrades, and the boundary guard that a 0.50-failure nmap sweep still fires) · `test_model_integrity.py` (7: manifest digests present and matching disk, stale-leaked-eval guard, missing-dir → None, absent-digest fails closed) · `test_api_auth.py` (9 API-level: 503 unconfigured, 401 missing/wrong token, 201 correct, reads open, 413 oversized, 400 empty; skipped if `fastapi`/`httpx` absent) |
 | `make evaluate` | `eval/results.{json,md}` | Scenario-level coverage, truth×pred confusion, benign FPR, **alert-level** precision |
 | `make loadtest` | `artifacts/loadtest.{json,md}` | In-process paced-replay envelope (~5000 flows/s on a dev box) — **explicitly NOT a PCAP Mbps proof** |
 | `make model-eval` | `models/artifacts/dga_holdout_evaluation.json` | Disjoint generated holdout, P/R/F1 + confusion |
@@ -483,7 +483,7 @@ precision, and its `confusion_and_precision` docstring states flow-level recall/
 alert can cover many flows, so flow-level F1 is not computable from this corpus.
 
 **Current results (re-verified 2026-09-29):** `8/8` attack scenarios detected · benign alerts
-`0` (FPR `0.0`) · DDoS subtype scenarios matched `3/3` · `108/108` tests pass, 0 skips.
+`0` (FPR `0.0`) · DDoS subtype scenarios matched `3/3` · `110/110` tests pass, 0 skips.
 
 **What is NOT claimed** (from `README.md` + `PERFORMANCE.md` + `docs/LIMITATIONS.md`):
 - No scored precision/recall/F1 on external labeled PCAPs — that needs the Zeek Tier-A replay
@@ -718,7 +718,7 @@ python3 -c "import json,sklearn; \
 
 | Item | Value |
 |---|---|
-| Tests | `108/108` pass, 0 skips (13 feature · 2 CSV · 24 C2-structure · 8 recon-fanout · 16 model/exfil/encrypted · 7 model-integrity · ~26 contract/security negative · 9 API auth) |
+| Tests | `110/110` pass, 0 skips (13 feature · 2 CSV · 24 C2-structure · 10 recon-fanout · 16 model/exfil/encrypted · 7 model-integrity · ~26 contract/security negative · 9 API auth) |
 | Eval | `8/8` attack scenarios, benign alerts `0`, FPR `0.0`, DDoS subtypes `3/3` |
 | Hash chain | `valid: true` |
 | ML | **inactive** (artifacts `sklearn 1.6.0` vs runtime `1.8.0`) |

@@ -184,17 +184,22 @@ def recon(e,f):
  if ports < 12 and hosts < 12 or f['failure_ratio'] < .5: return
  from detectors.reputation import describe
  net=describe(e['dst_ip']); spread=_provider_spread(f)
+ # aggregation_key is REQUIRED: the Pipeline dedups on (class, subtype, aggregation_key) and
+ # falls back to src|dst when it is absent — but a recon fan-out spans many dst_ips, so that
+ # fallback would make every flow a unique key and defeat dedup entirely (observed: 12 alerts
+ # for one nmap scan). Fan-out is a property of the SOURCE, so key on the source.
+ key={'aggregation_key':'src='+e['src_ip']}
  # port sweep: many distinct ports -> the defining feature of a service/port scan
  if ports >= 12:
-  return alert(e,'recon_scan','vertical_scan',.8,{**f,**net,'provider_spread':round(spread,3)},['T1046'],'recon-fanout-v2')
+  return alert(e,'recon_scan','vertical_scan',.8,{**f,**net,**key,'provider_spread':round(spread,3)},['T1046'],'recon-fanout-v2')
  # host sweep with few ports: only a real enumeration if the destinations are NOT provider CDNs
  if spread >= 0.5:
-  return alert(e,'recon_scan','horizontal_scan',.5,{**f,**net,'provider_spread':round(spread,3),
+  return alert(e,'recon_scan','horizontal_scan',.5,{**f,**net,**key,'provider_spread':round(spread,3),
    'downgrade_reason':f'{spread:.0%} of the fan-out destinations are high-volume provider/CDN networks '
                       'and only {ports} distinct ports were touched; consistent with content distribution '
                       'rather than host enumeration'},
    ['T1046'],'recon-fanout-v2')
- return alert(e,'recon_scan','horizontal_scan',.8,{**f,**net,'provider_spread':round(spread,3)},['T1046'],'recon-fanout-v2')
+ return alert(e,'recon_scan','horizontal_scan',.8,{**f,**net,**key,'provider_spread':round(spread,3)},['T1046'],'recon-fanout-v2')
 def exfil(e,f):
  # One 600KB HTTPS upload (single session) is a photo/attachment. Real staged exfil is
  # SUSTAINED -> require >=3 sessions in the window (matches the 'sustained_outbound' subtype).

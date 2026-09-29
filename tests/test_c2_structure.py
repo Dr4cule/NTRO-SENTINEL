@@ -263,6 +263,26 @@ class ReconFanout(unittest.TestCase):
         self.assertEqual(a['severity'], 'high')
         self.assertEqual(a['supporting_evidence']['provider_spread'], 0.0)
 
+    def test_every_recon_alert_carries_an_aggregation_key(self):
+        """The Pipeline dedups on (class, subtype, aggregation_key) and falls back to src|dst.
+        A recon fan-out spans many dst_ips, so without an explicit key every flow is unique and
+        dedup is defeated -- observed live as 12 alerts for a single nmap scan."""
+        for ports, hosts, fail in ((29, 29, .58), (30, 3, .9)):
+            a = self._run(hosts, ports, fail, [f'198.51.100.{i}' for i in range(1, hosts + 1)])
+            self.assertEqual(a['supporting_evidence']['aggregation_key'], 'src=10.9.9.9')
+        down = self._run(34, 9, 0.51, self.CDN * 3)
+        self.assertEqual(down['supporting_evidence']['aggregation_key'], 'src=10.9.9.9')
+
+    def test_one_scan_yields_one_alert_not_one_per_flow(self):
+        from engine.stream_consumer import Pipeline
+        p = Pipeline()
+        out = []
+        for i in range(50):
+            out += p.process({'kind': 'early_event', 'ts': 1000 + i * 0.5, 'src_ip': '10.9.9.9',
+                              'src_port': 1000 + i, 'dst_ip': f'198.51.100.{i % 30}',
+                              'dst_port': 1 + i, 'proto': 'tcp', 'conn_state': 'S0'})
+        self.assertEqual(len([a for a in out if a['threat_class'] == 'recon_scan']), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
