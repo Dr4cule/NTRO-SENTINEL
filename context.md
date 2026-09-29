@@ -375,7 +375,9 @@ CSS (hard black edges, offset shadows, blueprint grid). Views:
 4. **Confidence histogram** — 10 bins with guides at 0.45 / 0.7 / 0.9
 5. **Top hosts** — top 6 sources with class tags
 6. **Incidents** — per-source risk cards with risk meters
-7. **Evidence vault** — `Upload capture` button → `POST /api/ingest`; live chain-integrity chip
+7. **Evidence vault** — `Upload capture` button → `POST /api/ingest`; live chain-integrity chip;
+   **aggregate flow-CSV assessment panel** (`#assay`) for endpoint-less CSVs, where the API
+   returns a traffic assessment instead of alerts
 
 Data: `Promise.all` over 4 REST endpoints + `WebSocket(/ws/alerts)` + a 5 s `setInterval` poll
 as fallback. `preview_server.py` does not implement `/ws/alerts`, so console 404s there are
