@@ -18,7 +18,11 @@ services:
       #   python3 -c "import secrets;print(secrets.token_urlsafe(32))"
       SENTINEL_API_TOKEN: ${SENTINEL_API_TOKEN:?set SENTINEL_API_TOKEN in .env or the environment}
       MAX_UPLOAD_MB: "100"
-    volumes: ["./artifacts:/data"]
+    # :ro is NOT possible here — /data IS the alert store (sentinel.db) and is this service's
+    # product. F-24 as "mount it read-only" would break ingestion. The hardening that IS
+    # available on a write mount is nosuid,nodev,noexec, which block setuid execution, device
+    # nodes and file execution from the bind mount without touching write access.
+    volumes: ["./artifacts:/data:nosuid,nodev,noexec"]
     ports: ["8000:8000"]
     read_only: true
     tmpfs: [/tmp]
@@ -33,7 +37,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       ARTIFACT_DIR: /data
       MAX_UPLOAD_MB: "100"
-    volumes: ["./artifacts:/data"]
+    volumes: ["./artifacts:/data:nosuid,nodev,noexec"]
     read_only: true
     tmpfs: [/tmp]
     depends_on:
@@ -46,9 +50,13 @@ services:
     build: .
     command: ["python", "-m", "models.train_models"]
     environment: {MODEL_DIR: /data/models}
-    volumes: ["./models/artifacts:/data/models"]
+    # Offline build tool. It genuinely must write the model artifact, so this is the one mount
+    # where rw is unavoidable — but noexec/nosuid/nodev still apply, and the service is
+    # profile-gated so it never starts with the runtime stack.
+    volumes: ["./models/artifacts:/data/models:nosuid,nodev,noexec"]
     profiles: ["tools"]
-    # Offline build tool only; runs as root solely to write the bind-mounted model artifact.
+    # Runs as root ONLY to write the bind-mounted model artifact. This leaves root-owned files
+    # in models/artifacts; chown them back before the next non-root run (see docs/OPERATIONS).
     user: "0:0"
     read_only: true
     tmpfs: [/tmp]
@@ -58,7 +66,7 @@ services:
     build: .
     command: ["python", "-m", "models.evaluate_models"]
     environment: {MODEL_DIR: /data/models}
-    volumes: ["./models/artifacts:/data/models"]
+    volumes: ["./models/artifacts:/data/models:nosuid,nodev,noexec"]
     profiles: ["tools"]
     user: "0:0"
     read_only: true

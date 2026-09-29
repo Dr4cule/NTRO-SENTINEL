@@ -13,8 +13,17 @@ from sklearn.pipeline import Pipeline
 from joblib import dump
 
 OUT=Path(os.getenv('MODEL_DIR','models/artifacts'));OUT.mkdir(parents=True,exist_ok=True)
+# F-06: the training benign vocabulary and the EVALUATION benign vocabulary must be DISJOINT,
+# otherwise the reported F1 is a self-test (the model is scored on the exact words it memorised).
+# models/holdout.py owns both lists so the split is auditable in one place.
+from models.holdout import TRAIN_BENIGN, DGA_ALPHABET, DGA_LENGTHS
+
 def main():
- random.seed(26145); benign=['google','microsoft','cloudflare','ntro','service','updates','portal','intranet']; dga=[''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789',k=18)) for _ in range(250)]
+ random.seed(26145)
+ benign=list(TRAIN_BENIGN)
+ # DGA-like labels now span several lengths (not just 18 chars) so the classifier cannot key on
+ # a single token length, matching the varied-length holdout in models/holdout.py.
+ dga=[''.join(random.choices(DGA_ALPHABET,k=random.choice(DGA_LENGTHS))) for _ in range(250)]
  texts=benign*40+dga; labels=[0]*(len(benign)*40)+[1]*len(dga)
  dga_model=Pipeline([('chars',TfidfVectorizer(analyzer='char',ngram_range=(2,5),min_df=1)),('classifier',LogisticRegression(max_iter=500,class_weight='balanced',random_state=26145))]);dga_model.fit(texts,labels);dump(dga_model,OUT/'dga_char_ngrams.joblib')
  # normal upload envelope spans routine..moderate volume so the exfil score DISCRIMINATES

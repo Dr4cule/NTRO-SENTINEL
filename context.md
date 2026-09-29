@@ -203,9 +203,9 @@ per-class modules (`detectors/c2.py` etc.) are one-line re-exports for import co
 | `ddos` | skip noise traffic; then `syn_count>=20 AND completion_ratio<=.5` **OR** (`udp_count>=20 AND unique_sources>=8`) | `udp_reflection_amplification` if udp branch, else `spoof_like_source_flood` if `source_ip_entropy>=3.5`, else `syn_flood` | `min(1,(syn+udp)/40)` | T1498 | `ddos-rules-v2` |
 | `c2_beaconing` | skip local dest; skip noise traffic; `session_count>=5 AND iat_cv<=.12 AND persistence>=120 AND destination_port_count<=2`; **then** direction gate (dst_port not ephemeral) **and** size gate (`mean_outbound_bytes<=1500`, `mean_inbound_bytes<=1500`) **and** reputation rank | `periodic_session` if provider/reputation downgraded, else `periodic_beacon` | `0.45` downgraded, `0.8` real | T1071.001 | `c2-structure-v1` |
 | `dga_dns_tunnel` | skip known-good parent; `(label_length>=18 AND label_entropy>=3.3)` **OR** (`dga_score(first_label)>=.8`) | `dns_tunnel` if `query_rate>=.05 AND unique_subdomains>=3`, else `dga_domain` | `max(min(.95,entropy/5), learned or 0)` | T1071.004 / T1568.002 | `dns-lexical-ml-v1` / `dns-lexical-v1` |
-| `encrypted_malware` | `e.tls AND e.suspicious_fingerprint` — **ratio alone is not enough** (would flag every upload) | `metadata_anomaly` | `0.7` | T1071.001 | `tls-metadata-v1` |
+| `encrypted_malware` | `e.tls AND e.suspicious_fingerprint` (Zeek path, strong). Fallback when no JA3: `tls AND ratio>=8 AND host_sessions<=2 AND destination unattributed` | `metadata_anomaly` / `upload_channel_anomaly` | `0.7` / `0.5` | T1071.001 | `tls-metadata-v1` / `tls-metadata-heuristic-v1` |
 | `recon_scan` | `(unique_dst_ports>=12 OR unique_dst_hosts>=12) AND failure_ratio>=.5` | `vertical_scan` if ports>=hosts else `horizontal_scan` | `0.8` | T1046 | `recon-fanout-v1` |
-| `exfiltration` | `outbound_bytes>=500000 AND outbound_inbound_ratio>=5 AND session_count>=3`; ML only raises 0.8→0.9 | `sustained_outbound_anomaly` | `0.9` if ML flags, else `0.8` | T1041 | `exfil-baseline-ml-v1` / `exfil-rules-v1` |
+| `exfiltration` | `outbound_bytes>=500000 AND outbound_inbound_ratio>=5 AND session_count>=3`; ASN reputation Ranks (provider dest → `0.5/medium`), ML only raises 0.8→0.9 | `sustained_outbound_anomaly` | `0.5` provider, else `0.9` if ML flags / `0.8` | T1041 | `exfil-rules-v2` / `exfil-baseline-ml-v1` |
 
 ### Reasoning behind the non-obvious gates
 
@@ -216,10 +216,17 @@ per-class modules (`detectors/c2.py` etc.) are one-line re-exports for import co
   *low* failure. Scans hit closed ports → S0/REJ → high failure.
 - **`session_count>=3` on exfil** — one 600 KB HTTPS upload is a photo/attachment. Staged exfil
   is *sustained*.
-- **`suspicious_fingerprint` only on encrypted** — out/in ratio > 8 alone would fire on every
-  photo upload, backup, and webmail attachment. The ratio is retained as evidence, never a gate.
-  ⚠️ Consequence: the offline scapy path derives no JA3, so `encrypted_malware` never fires
-  without Zeek. This is a known, documented gap.
+- **`suspicious_fingerprint` preferred, but no longer required (F-10 fix)** — out/in ratio > 8
+  alone would fire on every photo upload, backup and webmail attachment, so ratio is never a
+  gate by itself. Because the scapy/live path derives no JA3, the old condition could never be
+  true there and the detector was dead outside Zeek. The fallback requires **three** independent
+  anomalies to agree — upload asymmetry `ratio>=8`, low host diversity `host_sessions<=2`, and a
+  destination the ASN table cannot attribute — and scores `0.5` vs `0.7` for a real fingerprint
+  match, so it ranks below the strong path rather than pretending to equal it.
+- **Exfil reputation ranking** — 21 consecutive live alerts were all to one Cloudflare IP
+  (500 KB–1 MB, ratio 8–53, 7–29 sessions): cloud sync/backup, byte-for-byte the shape of staged
+  exfil. Volume cannot separate them, so the destination network Ranks the alert to `0.5/medium`.
+  It is **never** suppressed — a real exfil to a CDN host must stay visible.
 
 ---
 
@@ -463,7 +470,7 @@ a temp dir and asserts the fallback behavior.
 
 | Command | Output | What it measures |
 |---|---|---|
-| `make test` | 76 unit tests | `test_features.py` (13: window eviction, six detection paths, DDoS subtypes + contract shape, benign FPR = 0, dedup, loadtest) · `test_csv_ingest.py` (2: both CSV flavors) · `test_c2_structure.py` (24: structural C2 gates, direction/size/reputation, provider downgrade, fail-open semantics, mDNS-DDoS suppression, and the 443-must-not-downgrade regression guard) · `test_contracts_and_security.py` (~30 **negative** tests: bool/out-of-range/non-numeric confidence, missing/mistyped contract fields, exact `flow_id` keys, duplicate `alert_id` → `IntegrityError` → idempotent, **tampered / deleted / reordered** chain rows → `verify_chain` invalid, correlation suppression, CSV rejection, `Infinity` values, BOM/space headers, upload cap < container memory, auth contract) · `test_api_auth.py` (9 API-level: 503 unconfigured, 401 missing/wrong token, 201 correct, reads open, 413 oversized, 400 empty; skipped if `fastapi`/`httpx` absent) |
+| `make test` | 99 unit tests | `test_features.py` (13: window eviction, six detection paths, DDoS subtypes + contract shape, benign FPR = 0, dedup, loadtest) · `test_csv_ingest.py` (2: both CSV flavors) · `test_c2_structure.py` (24: structural C2 gates, direction/size/reputation, provider downgrade, fail-open semantics, mDNS-DDoS suppression, and the 443-must-not-downgrade regression guard) · `test_contracts_and_security.py` (~30 **negative** tests: bool/out-of-range/non-numeric confidence, missing/mistyped contract fields, exact `flow_id` keys, duplicate `alert_id` → `IntegrityError` → idempotent, **tampered / deleted / reordered** chain rows → `verify_chain` invalid, correlation suppression, CSV rejection, `Infinity` values, BOM/space headers, upload cap < container memory, auth contract) · `test_models_and_fallbacks.py` (16: train/eval vocabulary disjointness guards, exfil reputation never-silences invariant, encrypted fallback three-signal requirement) · `test_model_integrity.py` (7: manifest digests present and matching disk, stale-leaked-eval guard, missing-dir → None, absent-digest fails closed) · `test_api_auth.py` (9 API-level: 503 unconfigured, 401 missing/wrong token, 201 correct, reads open, 413 oversized, 400 empty; skipped if `fastapi`/`httpx` absent) |
 | `make evaluate` | `eval/results.{json,md}` | Scenario-level coverage, truth×pred confusion, benign FPR, **alert-level** precision |
 | `make loadtest` | `artifacts/loadtest.{json,md}` | In-process paced-replay envelope (~5000 flows/s on a dev box) — **explicitly NOT a PCAP Mbps proof** |
 | `make model-eval` | `models/artifacts/dga_holdout_evaluation.json` | Disjoint generated holdout, P/R/F1 + confusion |
@@ -476,7 +483,7 @@ precision, and its `confusion_and_precision` docstring states flow-level recall/
 alert can cover many flows, so flow-level F1 is not computable from this corpus.
 
 **Current results (re-verified 2026-09-29):** `8/8` attack scenarios detected · benign alerts
-`0` (FPR `0.0`) · DDoS subtype scenarios matched `3/3` · `76/76` tests pass.
+`0` (FPR `0.0`) · DDoS subtype scenarios matched `3/3` · `99/99` tests pass (3 skips are the known-stale, root-owned model artifacts — they surface in test output rather than passing silently).
 
 **What is NOT claimed** (from `README.md` + `PERFORMANCE.md` + `docs/LIMITATIONS.md`):
 - No scored precision/recall/F1 on external labeled PCAPs — that needs the Zeek Tier-A replay
@@ -711,7 +718,7 @@ python3 -c "import json,sklearn; \
 
 | Item | Value |
 |---|---|
-| Tests | `76/76` pass (13 feature · 2 CSV · 24 C2-structure · ~26 contract/security negative · 9 API auth) |
+| Tests | `99/99` pass, 3 skips (13 feature · 2 CSV · 24 C2-structure · 16 model/exfil/encrypted · 7 model-integrity · ~26 contract/security negative · 9 API auth) |
 | Eval | `8/8` attack scenarios, benign alerts `0`, FPR `0.0`, DDoS subtypes `3/3` |
 | Hash chain | `valid: true` |
 | ML | **inactive** (artifacts `sklearn 1.6.0` vs runtime `1.8.0`) |
@@ -753,24 +760,60 @@ checked), `F-22` (standard `BUSYGROUP` idiom), `F-25` (environment is already re
 - `scripts/preview_server.py` has no auth at all (stdlib-only dev server) and remains
   single-threaded.
 
-## 20. Suggested next steps, in priority order
+## 20. Second hardening pass (2026-09-29) — F-06, F-10, F-24, exfil ranking
 
-1. **Apply `_is_noise_traffic` to `rules.ddos`** — mDNS multicast is currently reported as
-   `udp_reflection_amplification` (`conf 0.5`). One-line, highest visible impact.
-2. **Destination reputation / allowlist layer for C2.** Timing alone cannot separate
-   Cloudflare keepalives from malware phone-home. Either (a) allowlist well-known CDN/SaaS
-   egress destinations, or (b) require a second orthogonal signal (TLS JA3 + SNI mismatch, DNS
-   context, small-packet periodic upload pattern) before emitting `c2_beaconing`.
-3. **Give `encrypted_malware` a metadata-only fallback** so it is not dead on the scapy path, or
-   ship it explicitly marked as requiring Zeek (§15).
-4. **Replace fixed confidences** with a continuous score derived from the actual feature
-   distance-to-normal, so `severity` becomes meaningful and the confidence histogram on the
-   dashboard carries information.
+| Finding | Status | Change |
+|---|---|---|
+| **F-06** train/eval shared benign vocabulary | FIXED | New `models/holdout.py` owns both lists; they are now disjoint in **vocabulary** and in the DGA generative process (lengths 12–27, not just 18). `models/evaluate_models.py` rebuilds the holdout and records `benign_vocabulary_disjoint_from_training`. |
+
+**The F-06 result is the important part.** On the leaked split the starter DGA classifier
+reported precision/recall/F1 = 1.00. On the honest split it reports **0.32 / 1.00 / 0.48**, with
+255 of 270 held-out benign labels predicted DGA. Diagnosis: the model learned **token length,
+not entropy** — `grafana` (7 chars) scores 0.82 while the memorised training words score ~0.12.
+The 1.0 was measuring memorisation.
+
+This is recorded rather than tuned away. The lexical gate in `detectors/rules.py` is the real
+DGA detector; the ML is second-opinion enrichment that degrades to `None` when its version or
+digest gate fails. `models/model_cards/README.md` carries a prominent warning that the committed
+`dga_holdout_evaluation.json` is stale and must not be quoted. (It cannot currently be
+overwritten: `models/artifacts/` is root-owned from the `trainer` Docker profile, which runs as
+uid 0 to write the bind mount. `sudo chown $(id -u):$(id -g) models/artifacts/*` then
+`make model-eval` regenerates it.)
+
+| Finding | Status | Change |
+|---|---|---|
+| **F-10** `encrypted_malware` dead without JA3 | FIXED | A metadata-only fallback fires when the scapy/live path has no fingerprint. It requires **three** independent anomalies to agree (upload asymmetry, low host diversity, unattributable destination) and scores `0.5` vs `0.7` for a real JA3 match, so it ranks below the strong path. A provider destination is excluded. |
+| **exfil** live FPs | FIXED | Same ASN reputation ranking as C2: a sustained upload to a provider/CDN host becomes `0.5/medium` instead of `0.8-0.9/high`. Never suppressed. 21 consecutive Cloudflare alerts would all have downgraded. |
+| **F-24** `read_only` defeated by rw bind mount | PARTIAL — see note | Mounting `/data` `:ro` is **impossible**: it *is* the alert store. What is available on a write mount is now applied — `:nosuid,nodev,noexec` on all four bind mounts, and the reason is documented inline. |
+
+**F-09 is still open, deliberately.** The C2 rule still skips RFC1918/CGNAT destinations, so
+lateral C2 to `10.x` / `192.168.x` / `100.64.x` is invisible. That gate is load-bearing:
+`experiments/datasets.yml` records that removing it on real enterprise traffic produced a
+118-alert false-positive storm. It needs a second signal (host-role, port profile, DNS context)
+before it can be loosened safely.
+
+## 21. Suggested next steps, in priority order
+
+Items 1–3 below are **done** (see §15.1, §20); the list is retained so the reasoning behind
+each fix stays discoverable.
+
+1. ~~Apply `_is_noise_traffic` to `rules.ddos`~~ — **DONE**, mDNS suppressed before any volume
+   judgement, 38 of 41 historical FPs removed.
+2. ~~Destination reputation / allowlist layer for C2~~ — **DONE** as an ASN-based *ranking*
+   layer (`detectors/reputation.py`), deliberately not a hard allowlist, so an implant on a CDN
+   IP still surfaces at a lower score.
+3. ~~Give `encrypted_malware` a metadata-only fallback~~ — **DONE**, three-signal heuristic
+   scored below the JA3 path.
+4. **Replace the remaining fixed confidences.** `recon` and `exfil`-without-ML still emit `0.8`
+   and `encrypted` `0.7` regardless of how extreme the features are, so the dashboard's
+   confidence histogram carries little information for those classes.
 5. **Zeek Tier-A validation with a real labeled PCAP** and an IP+time+port label join — the
    only path to a legitimate external precision/recall number.
-6. **Retrain the ML artifacts** under the runtime sklearn to reactivate enrichment, then
-   replace the toy training data with family-separated public DGA labels before claiming any
-   accuracy.
+6. **Retrain the DGA model on real, family-separated public labels** (dns-zen, DGArchive) with
+   per-family splits. The current 0.48 F1 is honest but weak, and the root cause is known: it
+   learned length, not entropy (§20).
 7. **Hash-pinned lockfile** (`pip-compile --generate-hashes`) plus a `pip-audit` CI step, rather
-   than the unverified version numbers in the original report.
-8. Multi-worker HTTP server in `preview_server.py` to eliminate the single-threaded wedge (§10).
+   than the unverified version numbers in the original review.
+8. **Multi-worker HTTP server in `preview_server.py`** to eliminate the single-threaded wedge (§10).
+9. **F-09 (lateral C2):** loosen the RFC1918/CGNAT skip only alongside a second signal —
+   host-role, port profile or DNS context. Never on its own; §20 explains the 118-alert storm.

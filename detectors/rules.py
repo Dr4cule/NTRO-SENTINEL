@@ -130,10 +130,29 @@ def dns(e,f):
   f={**f,'dga_char_ngram_score':round(learned,3) if learned is not None else None}
   return alert(e,'dga_dns_tunnel',subtype,max(min(.95,f['label_entropy']/5),learned or 0),f,mitre,'dns-lexical-ml-v1' if learned is not None else 'dns-lexical-v1')
 def encrypted(e,f):
- # Out/in ratio alone flags EVERY upload (webmail attachment, photo, backup) -> pure FP.
- # Require a known-suspicious TLS fingerprint (JA3/JA3S match); ratio stays as evidence only.
+ # Out/in ratio alone flags EVERY upload (webmail attachment, photo, backup) -> pure FP, so
+ # ratio is NEVER a gate. On the Zeek path a known-suspicious JA3/JA4 remains the strong signal.
+ #
+ # F-10 fix (2026-09-29): the offline scapy/live path derives no JA3, so the old
+ # `if tls and suspicious_fingerprint` condition could NEVER be true there and the detector
+ # was dead outside Zeek. The fallback below uses only metadata that IS available on that
+ # path, and requires THREE independent anomalies to agree, so a single odd session cannot
+ # produce an alert. It is still scored lower than a real fingerprint match.
+ from detectors.reputation import describe
+ rep=describe(e['dst_ip']) if e.get('dst_ip') else {'reputation':'unknown'}
  if e.get('tls') and e.get('suspicious_fingerprint'):
-  return alert(e,'encrypted_malware','metadata_anomaly',.7,f,['T1071.001'],'tls-metadata-v1')
+  return alert(e,'encrypted_malware','metadata_anomaly',.7,{**f,**rep},['T1071.001'],'tls-metadata-v1')
+ # metadata-only fallback: strong upload asymmetry + no host diversity + destination we cannot
+ # attribute. Each is individually common; together they are what a C2 upload channel looks like.
+ # A CDN/provider destination is excluded because that is where backups and sync legitimately go.
+ if e.get('tls') and not e.get('ja3') and not e.get('suspicious_fingerprint'):
+  anomalous_size=f.get('outbound_inbound_ratio',0) >= 8
+  low_cardinality=f.get('host_sessions',0) <= 2
+  unattributed=rep['reputation'] not in ('provider',)
+  if anomalous_size and low_cardinality and unattributed:
+   return alert(e,'encrypted_malware','upload_channel_anomaly',.5,
+    {**f,**rep,'downgrade_reason':'no JA3 available on this ingest path; heuristic scored below a fingerprint match'},
+    ['T1071.001'],'tls-metadata-heuristic-v1')
 def recon(e,f):
  # Fan-out with mostly COMPLETED connections (failure_ratio low) is a browser pulling a page
  # from many CDN hosts, not a scan. Scans hit closed ports/hosts -> S0/REJ -> failure_ratio high.
@@ -145,8 +164,22 @@ def exfil(e,f):
  # SUSTAINED -> require >=3 sessions in the window (matches the 'sustained_outbound' subtype).
  if f['outbound_bytes'] >= 500000 and f['outbound_inbound_ratio'] >= 5 and f['session_count'] >= 3:
   from models.inference import exfil_anomaly
+  from detectors.reputation import describe
   a=exfil_anomaly(f['outbound_bytes'],f['outbound_inbound_ratio'])   # ML second opinion; threshold above stays the sole gate
-  ev={**f,'aggregation_key':e['src_ip']+'|'+e['dst_ip']}
+  ev={**f,**describe(e['dst_ip']),'aggregation_key':e['src_ip']+'|'+e['dst_ip']}
   if a is not None: ev['exfil_anomaly_score']=a['score']; ev['exfil_anomaly_flag']=a['flag']
-  conf=.9 if (a and a['flag']) else .8                               # model concurs it's an outlier -> raise severity
-  return alert(e,'exfiltration','sustained_outbound_anomaly',conf,ev,['T1041'],'exfil-baseline-ml-v1' if a is not None else 'exfil-rules-v1')
+  # Live-capture lesson (2026-09-29): 21 consecutive 'exfiltration' alerts, ALL to one
+  # Cloudflare IP, 500KB-1MB per window at ratio 8-53 over 7-29 sessions. That is a large
+  # sustained upload to a CDN-fronted service -- cloud backup, sync, video -- and it is
+  # byte-for-byte the shape of staged exfil. Volume cannot separate them; only the destination
+  # network can, so it Ranks the alert instead of suppressing it.
+  if ev['reputation']=='provider':
+   ev['downgrade_reason']=('destination is a high-volume provider/CDN network; a sustained upload '
+                           'of this size is consistent with cloud sync/backup, but the ratio and '
+                           'volume still warrant a look')
+   conf=.5                                      # 'medium': real exfil to a CDN host is possible, just less likely
+   ver='exfil-rules-v2'
+  else:
+   conf=.9 if (a and a['flag']) else .8         # model concurs it's an outlier -> raise severity
+   ver='exfil-baseline-ml-v1' if a is not None else 'exfil-rules-v2'
+  return alert(e,'exfiltration','sustained_outbound_anomaly',conf,ev,['T1041'],ver)
