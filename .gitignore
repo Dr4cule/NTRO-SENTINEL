@@ -1,5 +1,9 @@
 __pycache__/
 *.pyc
+# Local secrets: SENTINEL_API_TOKEN lives here. Never commit.
+.env
+.env.*
+!.env.example
 artifacts/*.json
 artifacts/*.jsonl
 models/artifacts/

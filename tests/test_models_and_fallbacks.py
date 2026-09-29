@@ -65,10 +65,19 @@ class ExfilReputation(unittest.TestCase):
         self.assertEqual(a['supporting_evidence']['asn_name'], 'Cloudflare')
         self.assertIn('downgrade_reason', a['supporting_evidence'])
 
-    def test_unknown_host_upload_stays_high(self):
+    def test_unknown_host_upload_stays_high_or_critical(self):
+        """An unattributable destination must never be downgraded. It scores 0.8, or 0.9 when
+        the ML second opinion flags it as an outlier — both are 'medium' or worse, and the ML
+        path only ever RAISES confidence, so a fresh model must not weaken the alert."""
         a = rules.exfil(self._e('198.51.100.77'), self._f(destination='198.51.100.77'))
-        self.assertEqual(a['severity'], 'high')
+        self.assertIn(a['severity'], ('high', 'critical'), a['severity'])
+        self.assertGreaterEqual(a['confidence'], 0.8)
         self.assertEqual(a['supporting_evidence']['reputation'], 'unknown')
+
+    def test_unknown_host_is_never_below_the_provider_case(self):
+        unknown = rules.exfil(self._e('198.51.100.77'), self._f(destination='198.51.100.77'))
+        provider = rules.exfil(self._e('104.21.21.127'), self._f(destination='104.21.21.127'))
+        self.assertGreaterEqual(unknown['confidence'], provider['confidence'])
 
     def test_volume_gate_unchanged(self):
         for o in ({'outbound_bytes': 1000}, {'outbound_inbound_ratio': 1.0}, {'session_count': 1}):
