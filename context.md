@@ -880,6 +880,10 @@ would see false positives.
 Items 1–3 below are **done** (see §15.1, §20); the list is retained so the reasoning behind
 each fix stays discoverable.
 
+0. **Fix the O(n²) C2 feature rebuild** — `features/c2_beacon.py:6` rebuilds the full timestamp
+   list per event, halving throughput as the 300 s window fills (1,716 → 160 eps at 2k→16k
+   events). This is currently the ceiling on the throughput target the statement requires (§22.6);
+   use a running sum / Welford update. Until then **do not quote 5,000 eps**.
 1. ~~Apply `_is_noise_traffic` to `rules.ddos`~~ — **DONE**, mDNS suppressed before any volume
    judgement, 38 of 41 historical FPs removed.
 2. ~~Destination reputation / allowlist layer for C2~~ — **DONE** as an ASN-based *ranking*
@@ -900,3 +904,153 @@ each fix stays discoverable.
 8. **Multi-worker HTTP server in `preview_server.py`** to eliminate the single-threaded wedge (§10).
 9. ~~F-09 (lateral C2)~~ — **DONE** (§20.2) via a destination-port profile, with a benign-internal
    fixture proving quietness. Residual: internal C2 on a legitimate service port is still invisible.
+
+## 22. Problem-statement conformance (SIH 2026 PS 26145)
+
+The statement requires a working prototype covering ingest → feature extraction → model
+inference → alert output, plus model/feature/training documentation and a live-or-replayed
+dashboard, subject to five architectural constraints. Status below is **measured**, not asserted.
+
+### 22.1 Required capabilities
+
+| Required | Status | Evidence |
+|---|---|---|
+| Ingest | ✅ | 4 paths: Zeek/Tier-A, offline+live scapy, drop-in watcher, CSV. Verified live on `enp2s0`. |
+| Feature extraction | ✅ | `features/` — 6 extractors over `WindowState` (time + key-count eviction, `max_keys=4096`). |
+| Model inference | ✅ | `models/inference.py`, version- **and SHA-256-gated**; degrades to deterministic rules when unavailable. Self-check: `python3 -m models.inference`. |
+| Alert output | ✅ | Validated records written single-writer into the hash-chained store; served over REST + WebSocket. |
+| Model documentation | ✅ | `models/model_cards/README.md` (both artifacts, plus a prominent warning that the committed eval number is stale). |
+| Feature documentation | ✅ | `docs/FEATURES_AND_MODELS.md` — per-class windows, fast path, ML contribution. |
+| Training / validation approach | ✅ | `models/holdout.py` (disjoint split), `make model-eval`, `eval/run_suite.py`, `eval/label_join.py` (external P/R harness). |
+| Dashboard, live or replayed | ✅ | `dashboard/index.html` — 7 views, severity + confidence on every row, live via WS/poll or replayed via upload. |
+
+### 22.2 (a) Read-only ingest
+
+**Complies.** The sensor only ever receives. No design element assumes a return path, an active
+query against the source, or inline blocking.
+
+- Capture boundary is a separate network namespace whose monitor NIC has **no L3 address, no
+  default route, IPv6 disabled and `OUTPUT DROP`** (`scripts/setup_lab.sh`, `tap/Dockerfile`).
+- `scripts/verify_one_way.sh` records `ip addr`/`route`/`ip -6`/`nft`/`ss` **plus a deliberately
+  failing egress test**, and archives the output to `artifacts/zeek-live-<UTC>/`. A one-way
+  claim with a negative control, not a promise.
+- No detector or ingest path writes to the monitored link; there is no blocking API in the
+  system. Actions are advisory alerts only.
+- ⚠️ Honest limit: this is a **software** namespace diode, not a certified physical one
+  (`docs/LIMITATIONS.md`).
+
+### 22.3 (b) No payload decryption
+
+**Complies.** TLS/QUIC is analysed from metadata only.
+
+- Zeek policy (`ingest/zeek/sentinel.zeek`) is passive: it never opens a connection and never
+  reads decrypted content.
+- The scapy adapter touches L3/L4 headers and DNS question names only. Payload appears in the
+  code exactly once, as `len(bytes(seg.payload))` — a **byte count**, never the bytes.
+- No TLS key material is collected, stored, or processed anywhere in the repo.
+- Where a fingerprint matters, it comes from Zeek-supplied JA3/JA4. When it is absent (the
+  scapy path) the encrypted detector degrades to a metadata-only heuristic scored *below* the
+  fingerprint path, and says so in `model_version`.
+
+### 22.4 (c) Streaming, not batch
+
+**Complies, with measured latency.** Alerts are raised per event, not per run.
+
+- `Pipeline.process(event)` returns alerts synchronously; `ingest/service.py:consumer` writes
+  them immediately (every 2 s it also checkpoints metrics).
+- Live deployment, measured just now: **p95 = 1.18 ms** detector latency, **stream_lag = 0**,
+  10,000-sample ring buffer for p50/p95/p99.
+- A dedicated stress test for this requirement:
+
+```bash
+python3 -m eval.replay_eval --scenario traffic-gen/scenarios/c2.jsonl --pace 0.05
+# -> artifacts/metrics.json : events, alerts, events/sec, p50/p95/p99 event->alert latency
+```
+
+### 22.5 (e) Standardized alert schema
+
+**Complies.** `schemas/alert.schema.json` and `engine/validation.py` enforce all ten fields, and
+`validate_alert` raises `ValueError` rather than admitting a malformed record.
+
+| Required by statement | Field | Example from a live alert |
+|---|---|---|
+| timestamp | `timestamp` | `2026-09-29T17:25:14.741829+00:00` |
+| flow identifier | `flow_id` (5-tuple) | `192.168.0.102:37038 → 140.82.112.26:443/tcp` |
+| threat class | `threat_class` | `c2_beaconing` |
+| — (extra) | `subtype` | `periodic_session` |
+| confidence score | `confidence` | `0.45` (0–1) |
+| — (extra) | `severity` | `medium` |
+| supporting evidence | `supporting_evidence` | `{aggregation_key, asn: "AS36459", asn_name: "GitHub", destination}` |
+| — (extra) | `mitre_attack` | `["T1071.001"]` |
+| — (extra) | `alert_id`, `model_version` | uuid4, `c2-structure-v1` |
+
+`severity` is derived from `confidence` (≥0.9 critical, ≥0.7 high, ≥0.45 medium, else low), and
+`confidence` is a **normalized detector score, not a calibrated probability** — stated in the
+schema, the docs, and in every alert's evidence. `engine/validation.py` additionally rejects
+non-numeric and **boolean** confidence (`bool` subclasses `int`, so `confidence=True` would
+otherwise pass a naive type gate and silently land in `low`).
+
+### 22.6 (d) Defined throughput target — the honest number, and a defect
+
+This is the requirement where the honest answer is uncomfortable, so it gets its own detail.
+
+**What the committed artifact claims.** `artifacts/loadtest.json` reports
+`highest_stable_eps: 5000`, 0 % drops. **That figure did not reproduce.** Re-running the same
+harness properly (`--duration 3 --rates 5000,10000,20000,40000,80000`) gives:
+
+| target eps | achieved | drops | stable |
+|---:|---:|---:|:--:|
+| 5,000 | 1,066 | 78.7 % | ✗ |
+| 10,000 | 1,578 | 84.2 % | ✗ |
+| 20,000 | 1,551 | 92.2 % | ✗ |
+| 40,000 | 1,555 | 96.1 % | ✗ |
+| 80,000 | 1,551 | 98.1 % | ✗ |
+
+The original run used `--duration 0.5`, so it measured a nearly-empty pipeline before its feature
+windows filled. **A slide must not quote 5,000 eps.**
+
+**Real cause, found while measuring this — a quadratic hot path.** Throughput was measured
+against a synthetic 1 ms-interval stream, and it *halves* as the C2 window fills:
+
+| events in the 300 s C2 window | throughput | cost/event |
+|---:|---:|---:|
+| 2,000 | 1,716 eps | 0.58 ms |
+| 8,000 | 325 eps | 3.08 ms |
+| 16,000 | 160 eps | 6.23 ms |
+
+`features/c2_beacon.py:6` rebuilds the entire timestamp list on **every** event:
+
+```python
+times=[x[0] for x in self.state.data[key]]      # O(window) per event -> O(n^2) overall
+```
+
+`WindowState` itself is **not** the cause (measured 46–48 k adds/s at 256, 1,024 and 4,096 live
+keys — flat), and no other feature module has this pattern. Fix is a running sum / Welford
+update over the window instead of a full rebuild; it is not yet done.
+
+**Therefore, the defensible claim is:**
+
+> **Sustained ~1,000–1,500 events/s** of metadata ingestion per single Python process on a
+> 16-core dev box, with p95 detector latency ~1 ms and 0 stream lag. Steady-state ceiling is
+> currently limited by an O(n²) timestamp rebuild in the C2 feature extractor; until that is
+> fixed, no higher figure should be claimed.
+
+Still true and worth stating: **this is a network-metadata pipeline, not a packet pipeline.** One
+flow event is one aggregated connection, not one packet, so events/s is the meaningful unit —
+comparable published metadata pipelines operate in the low thousands of flows/s per core.
+
+⚠️ Also honest: all of the above is **synthetic/replayed** telemetry, not sustained PCAP
+throughput on a real link. The sanctioned path for that is
+`scripts/run_pcap_replay.sh <pcap> <mbps>` → tcpreplay → one-way veth → Zeek, retaining the
+command, rate, host and artifact. `PERFORMANCE.md` deliberately commits no figure for the same
+reason.
+
+### 22.7 Summary for a slide
+
+| Constraint | Status | One-line proof |
+|---|---|---|
+| (a) Read-only ingest | ✅ | separate NS, no L3/route, IPv6 off, `OUTPUT DROP`, egress test archived |
+| (b) No payload decryption | ✅ | passive Zeek policy; payload read only as `len(...)` byte counts |
+| (c) Streaming, not batch | ✅ | per-event alert, live p95 1.18 ms, lag 0 |
+| (d) Defined throughput | ⚠️ | **~1,000–1,500 eps sustained**, ceiling currently capped by an O(n²) C2 feature rebuild; 5,000 eps in the old artifact did not reproduce |
+| (e) Standardized schema | ✅ | 10 fields, validated, hash-chained, MITRE-tagged |

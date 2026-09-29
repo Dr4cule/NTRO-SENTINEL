@@ -18,3 +18,9 @@
 - Read endpoints (`/api/alerts`, the dashboard, `/health`, `/ws/alerts`) are unauthenticated by design, since this is a read-only analyst enclave. Only the write endpoints are token-gated.
 - `scripts/preview_server.py` is a stdlib-only development viewer: single-threaded (it can wedge under concurrent browser fetches) and unauthenticated. Production serving is FastAPI in Docker.
 - TLS/QUIC payloads are never decrypted or stored.
+
+- **The throughput target is currently ~1,000-1,500 events/s per process, not 5,000.** The committed
+  `artifacts/loadtest.json` reports 5,000 eps with 0% drops, but that used `--duration 0.5` and measured
+  a nearly-empty pipeline; it does not reproduce. The real ceiling is an O(n^2) timestamp rebuild in
+  `features/c2_beacon.py` that halves throughput as the 300s window fills. All throughput evidence is
+  synthetic/replayed telemetry, not sustained PCAP on a real link. See `context.md` §22.6.
