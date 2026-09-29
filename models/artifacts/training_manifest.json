@@ -1,0 +1,869 @@
+{
+  "generated_at_utc": "2026-09-29T19:54:59.141216+00:00",
+  "seed": 26145,
+  "python_version": "3.11.16",
+  "scikit_learn_version": "1.6.0",
+  "numpy_version": "2.4.6",
+  "training_data": "REAL labelled public data (see models/real_dataset_registry.yml)",
+  "datasets": {
+    "dga_domains_full.csv": "e8bbe54f180cd127a07abaa3dbddcd843e7b7943dff2f18628619b1bd22e8253",
+    "umbrella.csv": "e1ec07be7bbf41a8a763795f0063f46dcf048a17bdd31072125ac0811eaa9879",
+    "tranco.csv": "5df88bf9072af7888ae67b6187e26b5519d56cd2d36de8317384ea6b6633f392"
+  },
+  "split_design": {
+    "dga": "family-disjoint: 6 of 25 families held out, never seen in training",
+    "benign": "source-disjoint: train from Umbrella, test from Tranco with overlapping labels removed",
+    "extra_holdout": "Alexa legit rows from the DGA dataset, never trained on"
+  },
+  "feature_contract": "first DNS label only; models.inference.dga_score(label)",
+  "preprocessing": {
+    "ngram_analyzer": "char",
+    "min_df": 2,
+    "max_features": 300000,
+    "sublinear_tf": true,
+    "numeric_features": [
+      "label_length",
+      "shannon_entropy"
+    ],
+    "min_label_length": 4,
+    "stop_labels": [
+      "biz",
+      "co",
+      "com",
+      "info",
+      "mail",
+      "mail2",
+      "net",
+      "org",
+      "web",
+      "www"
+    ]
+  },
+  "chosen_config": "char_2-5+len+entropy",
+  "models": [
+    "dga_char_ngrams.joblib",
+    "exfil_baseline.joblib"
+  ],
+  "model_files": [
+    "dga_char_ngrams.joblib",
+    "exfil_baseline.joblib"
+  ],
+  "exfil_baseline": {
+    "status": "prototype",
+    "validation_status": "not_measured",
+    "external_performance": "NOT_MEASURED",
+    "trained_on": "synthetic benign upload envelope (documented above) - NOT real exfiltration data",
+    "reason": "No public exfiltration dataset with labels matching [outbound_bytes, outbound_inbound_ratio] was obtainable in this environment.",
+    "contract": "exfil_anomaly(outbound_bytes, ratio) -> {'flag', 'score'}",
+    "gate_status": "ENRICHMENT ONLY - detectors/rules.py remains the sole decision path",
+    "synthetic_points": 300,
+    "envelope": {
+      "outbound_bytes": [
+        1000.0,
+        1000000.0
+      ],
+      "outbound_inbound_ratio": [
+        0.2,
+        8.0
+      ]
+    }
+  },
+  "data_stats": {
+    "n_dga_families_total": 25,
+    "train_families": [
+      "conficker",
+      "corebot",
+      "cryptolocker",
+      "dircrypt",
+      "emotet",
+      "kraken",
+      "matsnu",
+      "murofet",
+      "necurs",
+      "nymaim",
+      "padcrypt",
+      "pushdo",
+      "qadars",
+      "ramdo",
+      "ramnit",
+      "rovnix",
+      "simda",
+      "symmi",
+      "vawtrak"
+    ],
+    "test_families": [
+      "fobber",
+      "gozi",
+      "pykspa",
+      "ranbyus",
+      "suppobox",
+      "tinba"
+    ],
+    "n_train_families": 19,
+    "n_test_families": 6,
+    "train_dga": 76000,
+    "test_dga": 81000,
+    "benign_train": 400000,
+    "benign_test": 112306,
+    "benign_alexa_holdout": 332884,
+    "benign_train_source": "cisco-umbrella-top1m",
+    "benign_test_source": "tranco-top1m (umbrella labels removed)",
+    "benign_holdout_source": "chrmor dataset legit/alexa rows (never trained on)"
+  },
+  "leakage_report": {
+    "duplicate_domains_within_train_dga": 0,
+    "duplicate_domains_within_test_dga": 0,
+    "dga_overlap_train_test": 0,
+    "benign_overlap_train_test": 0,
+    "dga_overlap_train_vs_benign_any": 48,
+    "benign_source_disjoint": true,
+    "note": "DGA families are disjoint by construction; a non-zero dga_overlap would mean the same domain string appears under two families and is reported, not hidden."
+  },
+  "configs_evaluated": [
+    {
+      "tag": "char_2-5+len+entropy",
+      "threshold": 0.5,
+      "n_test_positive": 81000,
+      "n_test_negative": 112306,
+      "accuracy": 0.8569,
+      "precision": 0.8519,
+      "recall": 0.797,
+      "f1": 0.8236,
+      "macro_f1": 0.8516,
+      "weighted_f1": 0.8561,
+      "roc_auc": 0.926,
+      "pr_auc": 0.9192,
+      "false_positive_rate_on_benign": 0.0999,
+      "confusion": {
+        "tn": 101083,
+        "fp": 11223,
+        "fn": 16440,
+        "tp": 64560
+      },
+      "per_family_precision": "UNDEFINED - see docstring; FPs occur on benign labels that carry no family",
+      "alexa_holdout": {
+        "n": 332884,
+        "false_positives": 40831,
+        "fpr": 0.1227,
+        "mean_probability": 0.2213
+      },
+      "threshold_analysis": [
+        {
+          "threshold": 0.1,
+          "precision": 0.5578,
+          "recall": 0.9742,
+          "f1": 0.7094,
+          "fpr_benign": 0.5569,
+          "worst_family_recall": 0.87,
+          "confusion": {
+            "tn": 49760,
+            "fp": 62546,
+            "fn": 2091,
+            "tp": 78909
+          }
+        },
+        {
+          "threshold": 0.2,
+          "precision": 0.6588,
+          "recall": 0.9301,
+          "f1": 0.7713,
+          "fpr_benign": 0.3474,
+          "worst_family_recall": 0.6715,
+          "confusion": {
+            "tn": 73291,
+            "fp": 39015,
+            "fn": 5664,
+            "tp": 75336
+          }
+        },
+        {
+          "threshold": 0.3,
+          "precision": 0.7354,
+          "recall": 0.8846,
+          "f1": 0.8031,
+          "fpr_benign": 0.2296,
+          "worst_family_recall": 0.4979,
+          "confusion": {
+            "tn": 86525,
+            "fp": 25781,
+            "fn": 9345,
+            "tp": 71655
+          }
+        },
+        {
+          "threshold": 0.4,
+          "precision": 0.7987,
+          "recall": 0.8415,
+          "f1": 0.8195,
+          "fpr_benign": 0.153,
+          "worst_family_recall": 0.3578,
+          "confusion": {
+            "tn": 95127,
+            "fp": 17179,
+            "fn": 12841,
+            "tp": 68159
+          }
+        },
+        {
+          "threshold": 0.5,
+          "precision": 0.8519,
+          "recall": 0.797,
+          "f1": 0.8236,
+          "fpr_benign": 0.0999,
+          "worst_family_recall": 0.2402,
+          "confusion": {
+            "tn": 101083,
+            "fp": 11223,
+            "fn": 16440,
+            "tp": 64560
+          }
+        },
+        {
+          "threshold": 0.6,
+          "precision": 0.8952,
+          "recall": 0.7509,
+          "f1": 0.8167,
+          "fpr_benign": 0.0634,
+          "worst_family_recall": 0.1557,
+          "confusion": {
+            "tn": 105188,
+            "fp": 7118,
+            "fn": 20178,
+            "tp": 60822
+          }
+        },
+        {
+          "threshold": 0.7,
+          "precision": 0.9314,
+          "recall": 0.6968,
+          "f1": 0.7972,
+          "fpr_benign": 0.037,
+          "worst_family_recall": 0.085,
+          "confusion": {
+            "tn": 108149,
+            "fp": 4157,
+            "fn": 24559,
+            "tp": 56441
+          }
+        },
+        {
+          "threshold": 0.8,
+          "precision": 0.9617,
+          "recall": 0.6268,
+          "f1": 0.7589,
+          "fpr_benign": 0.018,
+          "worst_family_recall": 0.0359,
+          "confusion": {
+            "tn": 110282,
+            "fp": 2024,
+            "fn": 30228,
+            "tp": 50772
+          }
+        },
+        {
+          "threshold": 0.9,
+          "precision": 0.9837,
+          "recall": 0.51,
+          "f1": 0.6717,
+          "fpr_benign": 0.0061,
+          "worst_family_recall": 0.0067,
+          "confusion": {
+            "tn": 111622,
+            "fp": 684,
+            "fn": 39691,
+            "tp": 41309
+          }
+        }
+      ]
+    },
+    {
+      "tag": "char_3-5+len+entropy",
+      "threshold": 0.5,
+      "n_test_positive": 81000,
+      "n_test_negative": 112306,
+      "accuracy": 0.8502,
+      "precision": 0.8564,
+      "recall": 0.7719,
+      "f1": 0.812,
+      "macro_f1": 0.8437,
+      "weighted_f1": 0.8489,
+      "roc_auc": 0.9161,
+      "pr_auc": 0.9094,
+      "false_positive_rate_on_benign": 0.0933,
+      "confusion": {
+        "tn": 101826,
+        "fp": 10480,
+        "fn": 18477,
+        "tp": 62523
+      },
+      "per_family_precision": "UNDEFINED - see docstring; FPs occur on benign labels that carry no family",
+      "alexa_holdout": {
+        "n": 332884,
+        "false_positives": 38143,
+        "fpr": 0.1146,
+        "mean_probability": 0.2281
+      },
+      "threshold_analysis": [
+        {
+          "threshold": 0.1,
+          "precision": 0.5319,
+          "recall": 0.9743,
+          "f1": 0.6881,
+          "fpr_benign": 0.6185,
+          "worst_family_recall": 0.8732,
+          "confusion": {
+            "tn": 42848,
+            "fp": 69458,
+            "fn": 2078,
+            "tp": 78922
+          }
+        },
+        {
+          "threshold": 0.2,
+          "precision": 0.6367,
+          "recall": 0.9277,
+          "f1": 0.7551,
+          "fpr_benign": 0.3818,
+          "worst_family_recall": 0.6772,
+          "confusion": {
+            "tn": 69431,
+            "fp": 42875,
+            "fn": 5859,
+            "tp": 75141
+          }
+        },
+        {
+          "threshold": 0.3,
+          "precision": 0.7226,
+          "recall": 0.877,
+          "f1": 0.7923,
+          "fpr_benign": 0.2428,
+          "worst_family_recall": 0.4963,
+          "confusion": {
+            "tn": 85036,
+            "fp": 27270,
+            "fn": 9966,
+            "tp": 71034
+          }
+        },
+        {
+          "threshold": 0.4,
+          "precision": 0.7962,
+          "recall": 0.8263,
+          "f1": 0.8109,
+          "fpr_benign": 0.1526,
+          "worst_family_recall": 0.3524,
+          "confusion": {
+            "tn": 95173,
+            "fp": 17133,
+            "fn": 14073,
+            "tp": 66927
+          }
+        },
+        {
+          "threshold": 0.5,
+          "precision": 0.8564,
+          "recall": 0.7719,
+          "f1": 0.812,
+          "fpr_benign": 0.0933,
+          "worst_family_recall": 0.2321,
+          "confusion": {
+            "tn": 101826,
+            "fp": 10480,
+            "fn": 18477,
+            "tp": 62523
+          }
+        },
+        {
+          "threshold": 0.6,
+          "precision": 0.9052,
+          "recall": 0.7136,
+          "f1": 0.7981,
+          "fpr_benign": 0.0539,
+          "worst_family_recall": 0.146,
+          "confusion": {
+            "tn": 106252,
+            "fp": 6054,
+            "fn": 23196,
+            "tp": 57804
+          }
+        },
+        {
+          "threshold": 0.7,
+          "precision": 0.9434,
+          "recall": 0.642,
+          "f1": 0.764,
+          "fpr_benign": 0.0278,
+          "worst_family_recall": 0.0778,
+          "confusion": {
+            "tn": 109186,
+            "fp": 3120,
+            "fn": 29001,
+            "tp": 51999
+          }
+        },
+        {
+          "threshold": 0.8,
+          "precision": 0.9722,
+          "recall": 0.5412,
+          "f1": 0.6953,
+          "fpr_benign": 0.0111,
+          "worst_family_recall": 0.0342,
+          "confusion": {
+            "tn": 111054,
+            "fp": 1252,
+            "fn": 37164,
+            "tp": 43836
+          }
+        },
+        {
+          "threshold": 0.9,
+          "precision": 0.9906,
+          "recall": 0.3647,
+          "f1": 0.5331,
+          "fpr_benign": 0.0025,
+          "worst_family_recall": 0.0068,
+          "confusion": {
+            "tn": 112025,
+            "fp": 281,
+            "fn": 51461,
+            "tp": 29539
+          }
+        }
+      ]
+    },
+    {
+      "tag": "char_2-4+len+entropy",
+      "threshold": 0.5,
+      "n_test_positive": 81000,
+      "n_test_negative": 112306,
+      "accuracy": 0.8516,
+      "precision": 0.8413,
+      "recall": 0.7961,
+      "f1": 0.8181,
+      "macro_f1": 0.8464,
+      "weighted_f1": 0.851,
+      "roc_auc": 0.9217,
+      "pr_auc": 0.9148,
+      "false_positive_rate_on_benign": 0.1083,
+      "confusion": {
+        "tn": 100141,
+        "fp": 12165,
+        "fn": 16515,
+        "tp": 64485
+      },
+      "per_family_precision": "UNDEFINED - see docstring; FPs occur on benign labels that carry no family",
+      "alexa_holdout": {
+        "n": 332884,
+        "false_positives": 43805,
+        "fpr": 0.1316,
+        "mean_probability": 0.2263
+      },
+      "threshold_analysis": [
+        {
+          "threshold": 0.1,
+          "precision": 0.5561,
+          "recall": 0.9716,
+          "f1": 0.7073,
+          "fpr_benign": 0.5594,
+          "worst_family_recall": 0.8606,
+          "confusion": {
+            "tn": 49477,
+            "fp": 62829,
+            "fn": 2297,
+            "tp": 78703
+          }
+        },
+        {
+          "threshold": 0.2,
+          "precision": 0.6503,
+          "recall": 0.9281,
+          "f1": 0.7648,
+          "fpr_benign": 0.3599,
+          "worst_family_recall": 0.6726,
+          "confusion": {
+            "tn": 71883,
+            "fp": 40423,
+            "fn": 5822,
+            "tp": 75178
+          }
+        },
+        {
+          "threshold": 0.3,
+          "precision": 0.724,
+          "recall": 0.8836,
+          "f1": 0.7959,
+          "fpr_benign": 0.2429,
+          "worst_family_recall": 0.505,
+          "confusion": {
+            "tn": 85026,
+            "fp": 27280,
+            "fn": 9431,
+            "tp": 71569
+          }
+        },
+        {
+          "threshold": 0.4,
+          "precision": 0.7866,
+          "recall": 0.84,
+          "f1": 0.8125,
+          "fpr_benign": 0.1643,
+          "worst_family_recall": 0.3679,
+          "confusion": {
+            "tn": 93849,
+            "fp": 18457,
+            "fn": 12957,
+            "tp": 68043
+          }
+        },
+        {
+          "threshold": 0.5,
+          "precision": 0.8413,
+          "recall": 0.7961,
+          "f1": 0.8181,
+          "fpr_benign": 0.1083,
+          "worst_family_recall": 0.2566,
+          "confusion": {
+            "tn": 100141,
+            "fp": 12165,
+            "fn": 16515,
+            "tp": 64485
+          }
+        },
+        {
+          "threshold": 0.6,
+          "precision": 0.8877,
+          "recall": 0.749,
+          "f1": 0.8125,
+          "fpr_benign": 0.0683,
+          "worst_family_recall": 0.1661,
+          "confusion": {
+            "tn": 104631,
+            "fp": 7675,
+            "fn": 20328,
+            "tp": 60672
+          }
+        },
+        {
+          "threshold": 0.7,
+          "precision": 0.9261,
+          "recall": 0.6939,
+          "f1": 0.7934,
+          "fpr_benign": 0.0399,
+          "worst_family_recall": 0.0931,
+          "confusion": {
+            "tn": 107822,
+            "fp": 4484,
+            "fn": 24793,
+            "tp": 56207
+          }
+        },
+        {
+          "threshold": 0.8,
+          "precision": 0.9583,
+          "recall": 0.6227,
+          "f1": 0.7549,
+          "fpr_benign": 0.0195,
+          "worst_family_recall": 0.0399,
+          "confusion": {
+            "tn": 110113,
+            "fp": 2193,
+            "fn": 30559,
+            "tp": 50441
+          }
+        },
+        {
+          "threshold": 0.9,
+          "precision": 0.9827,
+          "recall": 0.5008,
+          "f1": 0.6635,
+          "fpr_benign": 0.0063,
+          "worst_family_recall": 0.0065,
+          "confusion": {
+            "tn": 111593,
+            "fp": 713,
+            "fn": 40437,
+            "tp": 40563
+          }
+        }
+      ]
+    }
+  ],
+  "best": {
+    "tag": "char_2-5+len+entropy",
+    "threshold": 0.5,
+    "n_test_positive": 81000,
+    "n_test_negative": 112306,
+    "accuracy": 0.8569,
+    "precision": 0.8519,
+    "recall": 0.797,
+    "f1": 0.8236,
+    "macro_f1": 0.8516,
+    "weighted_f1": 0.8561,
+    "roc_auc": 0.926,
+    "pr_auc": 0.9192,
+    "false_positive_rate_on_benign": 0.0999,
+    "confusion": {
+      "tn": 101083,
+      "fp": 11223,
+      "fn": 16440,
+      "tp": 64560
+    },
+    "per_family_recall": {
+      "fobber": {
+        "support": 13500,
+        "detected": 13186,
+        "recall": 0.9767,
+        "missed": 314,
+        "mean_probability": 0.8836
+      },
+      "gozi": {
+        "support": 13500,
+        "detected": 9108,
+        "recall": 0.6747,
+        "missed": 4392,
+        "mean_probability": 0.6089
+      },
+      "pykspa": {
+        "support": 13500,
+        "detected": 12127,
+        "recall": 0.8983,
+        "missed": 1373,
+        "mean_probability": 0.8198
+      },
+      "ranbyus": {
+        "support": 13500,
+        "detected": 13497,
+        "recall": 0.9998,
+        "missed": 3,
+        "mean_probability": 0.9835
+      },
+      "suppobox": {
+        "support": 13500,
+        "detected": 3243,
+        "recall": 0.2402,
+        "missed": 10257,
+        "mean_probability": 0.3417
+      },
+      "tinba": {
+        "support": 13500,
+        "detected": 13399,
+        "recall": 0.9925,
+        "missed": 101,
+        "mean_probability": 0.9356
+      }
+    },
+    "per_family_precision": "UNDEFINED - see docstring; FPs occur on benign labels that carry no family",
+    "alexa_holdout": {
+      "n": 332884,
+      "false_positives": 40831,
+      "fpr": 0.1227,
+      "mean_probability": 0.2213
+    },
+    "threshold_analysis": [
+      {
+        "threshold": 0.1,
+        "precision": 0.5578,
+        "recall": 0.9742,
+        "f1": 0.7094,
+        "fpr_benign": 0.5569,
+        "worst_family_recall": 0.87,
+        "confusion": {
+          "tn": 49760,
+          "fp": 62546,
+          "fn": 2091,
+          "tp": 78909
+        }
+      },
+      {
+        "threshold": 0.2,
+        "precision": 0.6588,
+        "recall": 0.9301,
+        "f1": 0.7713,
+        "fpr_benign": 0.3474,
+        "worst_family_recall": 0.6715,
+        "confusion": {
+          "tn": 73291,
+          "fp": 39015,
+          "fn": 5664,
+          "tp": 75336
+        }
+      },
+      {
+        "threshold": 0.3,
+        "precision": 0.7354,
+        "recall": 0.8846,
+        "f1": 0.8031,
+        "fpr_benign": 0.2296,
+        "worst_family_recall": 0.4979,
+        "confusion": {
+          "tn": 86525,
+          "fp": 25781,
+          "fn": 9345,
+          "tp": 71655
+        }
+      },
+      {
+        "threshold": 0.4,
+        "precision": 0.7987,
+        "recall": 0.8415,
+        "f1": 0.8195,
+        "fpr_benign": 0.153,
+        "worst_family_recall": 0.3578,
+        "confusion": {
+          "tn": 95127,
+          "fp": 17179,
+          "fn": 12841,
+          "tp": 68159
+        }
+      },
+      {
+        "threshold": 0.5,
+        "precision": 0.8519,
+        "recall": 0.797,
+        "f1": 0.8236,
+        "fpr_benign": 0.0999,
+        "worst_family_recall": 0.2402,
+        "confusion": {
+          "tn": 101083,
+          "fp": 11223,
+          "fn": 16440,
+          "tp": 64560
+        }
+      },
+      {
+        "threshold": 0.6,
+        "precision": 0.8952,
+        "recall": 0.7509,
+        "f1": 0.8167,
+        "fpr_benign": 0.0634,
+        "worst_family_recall": 0.1557,
+        "confusion": {
+          "tn": 105188,
+          "fp": 7118,
+          "fn": 20178,
+          "tp": 60822
+        }
+      },
+      {
+        "threshold": 0.7,
+        "precision": 0.9314,
+        "recall": 0.6968,
+        "f1": 0.7972,
+        "fpr_benign": 0.037,
+        "worst_family_recall": 0.085,
+        "confusion": {
+          "tn": 108149,
+          "fp": 4157,
+          "fn": 24559,
+          "tp": 56441
+        }
+      },
+      {
+        "threshold": 0.8,
+        "precision": 0.9617,
+        "recall": 0.6268,
+        "f1": 0.7589,
+        "fpr_benign": 0.018,
+        "worst_family_recall": 0.0359,
+        "confusion": {
+          "tn": 110282,
+          "fp": 2024,
+          "fn": 30228,
+          "tp": 50772
+        }
+      },
+      {
+        "threshold": 0.9,
+        "precision": 0.9837,
+        "recall": 0.51,
+        "f1": 0.6717,
+        "fpr_benign": 0.0061,
+        "worst_family_recall": 0.0067,
+        "confusion": {
+          "tn": 111622,
+          "fp": 684,
+          "fn": 39691,
+          "tp": 41309
+        }
+      }
+    ]
+  },
+  "calibration": [
+    {
+      "bin": "[0.0,0.1)",
+      "n": 51851,
+      "mean_predicted": 0.0441,
+      "observed_rate": 0.0403
+    },
+    {
+      "bin": "[0.1,0.2)",
+      "n": 27104,
+      "mean_predicted": 0.1452,
+      "observed_rate": 0.1318
+    },
+    {
+      "bin": "[0.2,0.3)",
+      "n": 16915,
+      "mean_predicted": 0.2467,
+      "observed_rate": 0.2176
+    },
+    {
+      "bin": "[0.3,0.4)",
+      "n": 12098,
+      "mean_predicted": 0.3474,
+      "observed_rate": 0.289
+    },
+    {
+      "bin": "[0.4,0.5)",
+      "n": 9555,
+      "mean_predicted": 0.448,
+      "observed_rate": 0.3767
+    },
+    {
+      "bin": "[0.5,0.6)",
+      "n": 7843,
+      "mean_predicted": 0.5485,
+      "observed_rate": 0.4766
+    },
+    {
+      "bin": "[0.6,0.7)",
+      "n": 7342,
+      "mean_predicted": 0.65,
+      "observed_rate": 0.5967
+    },
+    {
+      "bin": "[0.7,0.8)",
+      "n": 7802,
+      "mean_predicted": 0.7515,
+      "observed_rate": 0.7266
+    },
+    {
+      "bin": "[0.8,0.9)",
+      "n": 10803,
+      "mean_predicted": 0.855,
+      "observed_rate": 0.876
+    },
+    {
+      "bin": "[0.9,1.0)",
+      "n": 41993,
+      "mean_predicted": 0.9684,
+      "observed_rate": 0.9837
+    }
+  ],
+  "sanity_probabilities": {
+    "microsoft": 0.0141,
+    "grafana": 0.0884,
+    "sonarqube": 0.2978,
+    "kubernetes": 0.0679,
+    "elasticsearch": 0.0277,
+    "xk39fjq2mzp1vb7wnt": 0.8329,
+    "a8f3k2p9q1z7x5v3b2n1m4": 0.2076,
+    "qvxzj7k3m1p9b5n2": 0.3315
+  },
+  "sha256": {
+    "dga_char_ngrams.joblib": "ce1382fe2a1fa8e484cbd2c85c4ebc5154df9a85b9d3c6cf2a5e5e03205480a4",
+    "exfil_baseline.joblib": "845af50de949abcb82ea7188f5c569c4a276e94e32c925fed411500922ed88f1"
+  },
+  "security_warning": "joblib artifacts are pickle-based: loading one executes code. models/inference.py verifies SHA-256 against this manifest before unpickling and refuses a scikit-learn version mismatch."
+}
