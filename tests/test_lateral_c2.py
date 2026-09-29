@@ -128,6 +128,52 @@ class InternetPathUnaffected(unittest.TestCase):
         self.assertEqual(a['subtype'], 'lateral_beacon')
 
 
+class InboundRepliesAreNotLateral(unittest.TestCase):
+    """Live-capture regression. Six `lateral_beacon` false positives appeared on the first
+    F-09 build: dst was the LOCAL host on an ephemeral port (44088, 53054, 41764, 58702,
+    38694) with PUBLIC sources (Akamai, GitHub, Facebook). Those are replies to our own
+    outbound sessions, not beacons. The port range alone cannot be the test, because a real
+    lateral implant uses a fixed port above 1024 as a matter of course - what separates the
+    two cases is the source being off-net."""
+
+    def _c2(self, src, dst, port):
+        f = {'window_seconds': 300, 'session_count': 8, 'iat_mean': 30.0, 'iat_cv': 0.0,
+             'period_seconds': 30.0, 'destination': dst, 'destination_port_count': 1,
+             'persistence_seconds': 210.0, 'outbound_bytes': 960, 'inbound_bytes': 1280,
+             'outbound_inbound_ratio': 0.75, 'mean_outbound_bytes': 120.0,
+             'mean_inbound_bytes': 160.0}
+        e = {'kind': 'conn', 'ts': 1000.0, 'src_ip': src, 'src_port': 443, 'dst_ip': dst,
+             'dst_port': port, 'proto': 'tcp', 'orig_bytes': 150, 'resp_bytes': 200,
+             'conn_state': 'SF'}
+        return rules.c2(e, f)
+
+    def test_observed_false_positives_are_now_silent(self):
+        for src, dst, port in [('140.82.114.25', '192.168.0.102', 44088),
+                               ('163.70.140.60', '192.168.0.102', 53054),
+                               ('104.18.39.21', '192.168.0.102', 41764),
+                               ('172.64.148.235', '192.168.0.102', 58702),
+                               ('192.200.0.116', '192.168.0.102', 38694)]:
+            self.assertIsNone(self._c2(src, dst, port),
+                              f'reply from {src} to our own host on {port} is not lateral C2')
+
+    def test_ephemeral_destination_from_public_source_is_never_lateral(self):
+        for port in (44088, 53054, 41764, 58702, 38694, 60123):
+            self.assertIsNone(self._c2('203.0.113.9', '10.0.0.5', port), port)
+
+    def test_internal_source_on_a_fixed_implant_port_still_fires(self):
+        """The other half of the same test: the fix must not become a blanket port-range skip,
+        or genuine lateral C2 would be hidden again."""
+        for port in (4444, 1337, 9001):
+            self.assertEqual(self._c2('10.0.0.5', '10.0.0.99', port)['subtype'], 'lateral_beacon')
+
+    def test_service_discovery_ports_are_internal_services(self):
+        """WSD (5350/5351) is periodic-by-design on a LAN, the same family as mDNS 5353.
+        Observed as a false positive against the local gateway."""
+        for port in (5350, 5351, 5352, 5353, 5354, 5355):
+            self.assertTrue(rules._internal_service_port(port), port)
+        self.assertIsNone(self._c2('192.168.0.102', '192.168.0.1', 5351))
+
+
 class EvalCoversTheNewFixture(unittest.TestCase):
     def test_both_fixtures_are_in_the_suite(self):
         from eval.run_suite import EXPECTED

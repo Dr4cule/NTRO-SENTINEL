@@ -57,11 +57,12 @@ Everything below is built, wired end-to-end, and runnable today:
 | Area | State |
 |---|---|
 | 6 detectors (ddos · c2 · dga/dns-tunnel · encrypted-malware · recon · exfiltration) | ✅ deterministic, explainable, MITRE-mapped |
-| Streaming engine · per-source correlation · 30s dedup · bounded windows | ✅ |
+| Streaming engine · per-source correlation · per-threat dedup · bounded windows | ✅ |
+| Structural gating for C2/exfil (direction, payload size, destination-ASN reputation) | ✅ offline, air-gapped; **ranks** alerts, never suppresses |
 | Hash-chained SQLite store + integrity verification | ✅ |
 | FastAPI REST + WebSocket · single-file neo-brutalist dashboard | ✅ |
 | Offline PCAP→events adapter + **24/7 live-capture / file-ingest service** | ✅ |
-| Controlled-scenario evaluation (8/8 attack scenarios detected · benign FPR 0.0) | ✅ committed |
+| Controlled-scenario evaluation (9/9 attack scenarios detected · benign FPR 0.0) | ✅ committed |
 | Hybrid ML enrichment — DGA char-ngram classifier + exfil anomaly (IsolationForest), both optional & graceful | ✅ |
 | Docker hardening · one-way proof scripts | ✅ |
 
@@ -102,7 +103,7 @@ Every stage is **bounded**: feature windows evict by time *and* key count (max 4
 | Class | Fires when (metadata only) | MITRE |
 |---|---|---|
 | `ddos` | `syn_count ≥ 20` or (`udp_count ≥ 20` and `unique_sources ≥ 8`); confidence scales with intensity | T1498 |
-| `c2_beaconing` | ≥4 sessions, inter-arrival CV ≤ 0.15, persistence ≥ 60s, ≤2 dst ports | T1071.001 |
+| `c2_beaconing` | ≥5 sessions, inter-arrival CV ≤ 0.12, persistence ≥ 120s, ≤2 dst ports, **plus** a client-initiated direction, a heartbeat-sized exchange, and a destination network that ranks the alert. Internal destinations on a non-service port raise `lateral_beacon` | T1071.001 / **T1021** |
 | `dga_dns_tunnel` | label length ≥ 18 **and** entropy ≥ 3.3, **or** ML DGA score ≥ 0.8 | T1071.004 / T1568.002 |
 | `encrypted_malware` | TLS present **and** (out/in byte ratio > 8 **or** suspicious fingerprint) | T1071.001 |
 | `recon_scan` | ≥12 unique dst ports (vertical) or ≥12 unique dst hosts (horizontal) | T1046 |
@@ -112,56 +113,131 @@ Each alert carries exact feature values, a normalized `confidence` (a detector s
 
 ## Quickstart
 
-> **Dependencies.** Viewing the dashboard needs nothing but Python 3.11+ (stdlib only). Ingesting a PCAP or live traffic needs `scapy` (`pip install scapy`). The full FastAPI + WebSocket API and Docker stack need `pip install -r requirements.txt`.
+> **Dependencies.** Viewing the dashboard needs Python 3.11+ and nothing else (stdlib only). Ingesting
+> a PCAP or live traffic needs `scapy` (`pip install scapy`). The FastAPI/WebSocket API and the Docker
+> stack need `pip install -r requirements.txt`. Ingest does **not** import fastapi, so the capture and
+> replay paths work with scapy alone.
 >
-> **ML enrichment (optional).** The DGA and exfiltration detectors take an optional ML second opinion; if the model isn't present (or was trained under a different scikit-learn) they degrade silently to their deterministic rules. It activates automatically in Docker (the image retrains at build). To activate locally: `MODEL_DIR=artifacts/models python3 -m models.train_models`, then run ingest with the same `MODEL_DIR`.
+> **ML enrichment (optional).** The DGA and exfiltration detectors take an optional ML second opinion.
+> An artifact is loaded only if its **SHA-256 matches the training manifest** *and* it was built under
+> the running scikit-learn; otherwise both detectors fall back silently to their deterministic rules.
+> It activates automatically in Docker (the image retrains at build). Locally:
+> `make model-eval TRAIN_BACKEND=local`, then run ingest with the same `MODEL_DIR`.
 
 ### 1 · See the dashboard — zero dependencies, ~30s
 
 ```bash
 python3 scripts/preview_server.py 8001
-# open http://localhost:8001  (reads the live artifacts/sentinel.db; edits preview on refresh)
+# open http://localhost:8001
 ```
 
-### 2 · Analyze a capture file (PCAP, or Zeek/JSONL logs)
+Reads the live `artifacts/sentinel.db` and re-reads `dashboard/index.html` per request, so edits show
+up on refresh. Empty store on first run — see step 2 or 3 to put something in it.
 
-Feed a file straight into the store the dashboard reads, then exit:
+`preview_server.py` is a stdlib **development viewer** mirroring the endpoints below — the four GETs
+the dashboard uses, plus `/api/metrics`, `/health` and `POST /api/ingest`. `/ws/alerts` is the one
+thing it does **not** implement, so the browser logs a 404 for the WebSocket and silently falls back to
+its 5-second poll; that is expected. It is single-threaded, so a burst of concurrent fetches can wedge
+it — if the page sticks on "Loading", just restart it.
+
+### 2 · Analyze a capture file
 
 ```bash
 python3 -m ingest.service --file /path/to/capture.pcap --once
 ```
 
-Huge capture? Cap how many packets are parsed:
+Writes into the same store the dashboard reads. Huge capture? Cap the parse:
 
 ```bash
 MAX_PACKETS=300000 python3 -m ingest.service --file big.pcap --once
 ```
 
-Accepts `.pcap` / `.pcapng` / `.cap` and line-delimited `.jsonl` / Zeek-JSON. Refresh the dashboard and the new alerts appear. (To only print detections without writing the store: `python3 -m ingest.pcap_to_events <pcap> [max_packets]`.)
+Accepted: `.pcap` `.pcapng` `.cap`, line-JSON `.jsonl`/`.json`/`.log`, and `.csv`.
+
+**CSVs have two very different outcomes, decided by the header:**
+
+| CSV contains | Result |
+|---|---|
+| a source **and** destination IP column (e.g. `Source IP`, `Destination IP`) | real alerts through the normal pipeline — they appear in **every** live dashboard panel |
+| no endpoint columns (e.g. a CICFlowMeter release: 78 flow statistics + `Label`) | **no flow alerts**, and an on-screen *assessment* panel instead |
+
+The second case is deliberate. Every detector groups on per-flow IP and timestamp; without them,
+per-flow attribution is impossible and Sentinel will not fabricate it. The upload still returns a
+full assessment — flow count, label census, per-port attack concentration, SYN-heavy fraction — so an
+endpoint-less file is not thrown away, it just cannot produce attributed alerts. For per-victim alerts
+from such a dataset, replay its **PCAP** through Zeek (Tier A) instead.
+
+To print detections without touching the store:
+`python3 -m ingest.pcap_to_events <pcap> [max_packets]`.
 
 ### 3 · Capture live traffic — run it 24/7
 
-One long-running service captures a NIC *and* ingests drop-in files at the same time, feeding the same store live:
-
 ```bash
-sudo python3 -m ingest.service --live eth0 --watch artifacts/inbox
+sudo python3 -m ingest.service --live <iface> --watch artifacts/inbox
 ```
 
-- `--live eth0` — sniff the interface continuously (needs **root / CAP_NET_RAW**); flows finalize into events after ~10s idle, like Zeek closing a connection.
-- `--watch artifacts/inbox` — drop a `.pcap`/`.jsonl` into the folder anytime; it's ingested and moved to `processed/`.
+- `--live <iface>` — sniff continuously (**root / `CAP_NET_RAW` required**); flows finalize into
+  events after ~10s idle, mirroring how Zeek closes a connection.
+- `--watch artifacts/inbox` — drop a `.pcap`/`.csv`/`.jsonl` in any time; it is ingested and moved to
+  `processed/`.
 
-A single consumer thread is the **only** writer to the store, so the hash chain stays serialized no matter how many sources feed it. Leave it running; the dashboard updates live.
+**Pick the interface that actually carries your traffic.** With two NICs on one subnet, the kernel
+uses the lower route metric and the other sits idle — the sniffer will then report "capturing" while
+seeing almost nothing:
+
+```bash
+ip route | head -3                    # which dev carries the default route?
+cat /sys/class/net/<iface>/statistics/rx_packets; sleep 3; cat /sys/class/net/<iface>/statistics/rx_packets
+```
+
+**Verify it is really capturing.** A raw-socket failure does not stop the process; the `AsyncSniffer`
+thread dies quietly. Confirm the event counter is moving instead of trusting the startup message:
+
+```bash
+curl -s http://127.0.0.1:8001/api/metrics
+```
+
+A single consumer thread is the **only** writer to the store, so the hash chain stays serialized no
+matter how many sources feed it. Leave it running; the dashboard updates live.
 
 ### 4 · Full stack (Docker — production-shaped)
 
 ```bash
+echo "SENTINEL_API_TOKEN=$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')" >> .env
 docker compose up -d --build            # redis + streaming worker + hardened API
 # open http://localhost:8000
 curl localhost:8000/health              # status + chain validity + pipeline metrics
 curl localhost:8000/api/evidence/verify # recompute & verify the whole hash chain
 ```
 
-Containers run `read_only`, `cap_drop: ALL`, `no-new-privileges`, with pinned images and memory/CPU limits. Rebuild only the API after editing the dashboard: `docker compose up -d --build api`.
+`POST /api/alerts` and `POST /api/ingest` are **token-gated** and fail **closed**: with no
+`SENTINEL_API_TOKEN` set they return `503` rather than accepting unauthenticated writes into the
+tamper-evident chain. Reads (dashboard, `/api/alerts`, `/health`, `/ws/alerts`) stay open, because
+this is a read-only analyst enclave. The dashboard prompts for the token once on a `401`/`503` and
+keeps it in that tab's `sessionStorage`. `.env` is git-ignored; `.env.example` documents the variable.
+
+Containers run `read_only`, `cap_drop: ALL`, `no-new-privileges`, with pinned images and memory/CPU
+limits. Rebuild only the API after editing the dashboard: `docker compose up -d --build api`.
+
+### 5 · Confirm it works
+
+```bash
+make test          # 137 unit tests
+make evaluate      # 9/9 attack scenarios, benign FPR 0.0 -> eval/results.{json,md}
+make generate      # regenerate the controlled scenarios (incl. the F-09 lateral + benign-internal pair)
+```
+
+To see a real detection rather than trusting the fixtures, scan a documentation-only address
+(`192.0.2.0/24`, RFC 5737 — unrouted, so nothing real is touched) while live capture runs:
+
+```bash
+nmap -sT -Pn -n -p 1-45 192.0.2.1
+sleep 16                                     # let the 10s flow-close flush run
+curl -s "http://127.0.0.1:8001/api/alerts?limit=3"
+```
+
+Expect `recon_scan/vertical_scan` anchored on `192.0.2.1` (not on an unrelated CDN IP), plus a
+`ddos/syn_flood` for the same probe burst. One scan, one alert.
 
 ## Evidence & honesty discipline
 
@@ -172,7 +248,8 @@ This is the project's strongest rule, and it's enforced in code:
 - **Traceable.** Every alert names the exact rule/model version that produced it and the feature values behind it.
 
 ```bash
-make test         # unit suite (window eviction, all six detectors, dedup, FPR guard)
+make test         # 137 unit tests (windows, all six detectors, dedup, correlation, FPR,
+                  #  hash-chain tamper detection, write auth, CSV + external-scoring paths)
 make evaluate     # controlled coverage + confusion + FPR → eval/results.{json,md}
 make loadtest     # in-process throughput envelope → artifacts/loadtest.{json,md}
 make check        # compileall + docker compose config  (CI-style gate)
@@ -190,7 +267,9 @@ alertstore/   store.py — hash-chained SQLite
 api/          main.py — FastAPI REST + WebSocket, serves the dashboard
 dashboard/    index.html — the single-file, zero-dependency UI
 models/       train / evaluate / inference for the prototype ML models
-eval/         run_suite.py · loadtest.py · cic_ids2017_coverage.py  (all non-inflationary)
+eval/         run_suite.py · loadtest.py · cic_ids2017_coverage.py · label_join.py
+              (all non-inflationary; label_join is the external P/R harness and REFUSES to
+               report on a too-thin ground-truth join)
 scripts/      replay · live-capture · one-way-proof · demo · preview_server.py
 docs/         DATASETS · LIMITATIONS · OPERATIONS · ENCLAVE_HARDENING · mitre_mapping · …
 experiments/  datasets.yml (registry) · scenarios.yml (labels)

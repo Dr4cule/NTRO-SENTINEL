@@ -36,7 +36,15 @@ class H(BaseHTTPRequestHandler):
         p = urlparse(self.path); q = parse_qs(p.query)
         if p.path in ("/", "/index.html"): return self._send(INDEX.read_text(), "text/html")
         if p.path == "/api/alerts":
-            return self._send(store.list(q.get("threat_class", [None])[0], q.get("severity", [None])[0], 250))
+            # honour ?limit= like api/main.py does; previously hardcoded to 250, so a caller
+            # asking for fewer alerts got the full feed and could not isolate a recent result
+            try: lim = int(q.get("limit", ["250"])[0])
+            except (TypeError, ValueError): lim = 250
+            return self._send(store.list(q.get("threat_class", [None])[0], q.get("severity", [None])[0], lim))
+        if p.path == "/api/metrics": return self._send(store.summary()["pipeline"])
+        if p.path == "/health":
+            return self._send({"status": "ok", "store": "sqlite", "chain": store.verify_chain(),
+                               "pipeline": store.summary()["pipeline"]})
         if p.path == "/api/dashboard/summary": return self._send(store.summary())
         if p.path == "/api/evidence/verify": return self._send(store.verify_chain())
         if p.path == "/api/incidents": return self._send(incidents())

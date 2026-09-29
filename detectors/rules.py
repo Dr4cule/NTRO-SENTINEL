@@ -74,7 +74,7 @@ def _is_noise_traffic(e):
 _INTERNAL_SERVICE_PORTS={
  53,67,68,69,88,102,110,111,123,135,137,138,139,143,161,162,177,389,427,443,445,464,465,500,
  514,520,546,547,554,587,593,631,636,646,873,989,990,1025,1026,1194,1433,1434,1512,1513,
- 1521,1723,1900,2049,2404,3268,3269,3306,3389,3690,5060,5222,5352,5353,5355,5432,5672,
+ 1521,1723,1900,2049,2404,3268,3269,3306,3389,3690,5060,5222,5350,5351,5352,5353,5354,5355,5432,5672,
  5900,5985,5986,5988,6379,6666,6667,6668,6669,6697,7001,7002,8000,8009,8080,8081,8082,8083,
  8088,8443,8472,8883,9090,9100,9200,9300,9418,9999,11211,27017,28017,50000,
  # egress proxies, agent polling, mail relays and RPC that are periodic on an internal net
@@ -138,6 +138,13 @@ def c2(e,f):
  from detectors.reputation import describe
  if _is_local_dest(e['dst_ip']):
   if _internal_service_port(port): return
+  # An inbound flow to an EPHEMERAL destination port, arriving from a PUBLIC source, is a reply
+  # to one of our own outbound sessions — not a beacon. Live capture produced six false lateral
+  # alerts this way (dst 192.168.0.102 on ports 44088/53054/41764/..., sources Akamai/GitHub/
+  # Facebook). The port RANGE alone cannot be the test here, because a lateral implant uses a
+  # fixed port above 1024 as a matter of course; what separates the two cases is the source
+  # being off-net. A genuinely internal source is left to the port-profile judgement above.
+  if port>_EPHEMERAL_FLOOR and not _is_local_dest(e.get('src_ip','')): return
   return alert(e,'c2_beaconing','lateral_beacon',.85,
    {**f,'dst_scope':'internal','destination_port':port,'aggregation_key':e['src_ip']+'|'+e['dst_ip'],
     'rationale':f'periodic low-jitter beacon to an INTERNAL host on port {port}, which is not a known '
