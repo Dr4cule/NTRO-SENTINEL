@@ -153,12 +153,48 @@ def encrypted(e,f):
    return alert(e,'encrypted_malware','upload_channel_anomaly',.5,
     {**f,**rep,'downgrade_reason':'no JA3 available on this ingest path; heuristic scored below a fingerprint match'},
     ['T1071.001'],'tls-metadata-heuristic-v1')
+def _provider_spread(f):
+ """Fraction of a fan-out window whose destinations resolve to known provider/CDN networks.
+
+ Requires the feature to carry its destination list; when it does not, returns 0.0 so the
+ caller treats the spread as UNKNOWN (i.e. does not downgrade). An absent list must never
+ make a detector quieter.
+ """
+ hosts=(f.get('dst_hosts') or (f.get('destination_list') or []))
+ if not hosts: return 0.0
+ from detectors.reputation import reputation
+ hit=sum(1 for h in hosts if reputation(h)=='provider')
+ return hit/len(hosts)
 def recon(e,f):
  # Fan-out with mostly COMPLETED connections (failure_ratio low) is a browser pulling a page
  # from many CDN hosts, not a scan. Scans hit closed ports/hosts -> S0/REJ -> failure_ratio high.
- if (f['unique_dst_ports'] >= 12 or f['unique_dst_hosts'] >= 12) and f['failure_ratio'] >= .5:
-  subtype='vertical_scan' if f['unique_dst_ports'] >= f['unique_dst_hosts'] else 'horizontal_scan'
-  return alert(e,'recon_scan',subtype,.8,{**f,'aggregation_key':'src='+e['src_ip']},['T1046'],'recon-fanout-v1')
+ #
+ # A blanket failure_ratio raise was tried and REJECTED: recorded nmap sweeps sit at 0.50-0.66 in
+ # a busy window (a concurrent browser session dilutes the ratio), so raising the gate to 0.7
+ # silently disabled real scan detection. The gate therefore stays at 0.5, and the two
+ # structural signals below do the discriminating instead:
+ #
+ #   * PORT DIVERSITY - a sweep enumerates ports; content delivery touches a handful. Fan-out
+ #     across many hosts but only a few ports is not a port scan.
+ #   * PROVIDER SPREAD - a browser fans out across many CDN/edge ASNs; a sweep enumerates
+ #     within one network. If most destinations are provider networks, rank it down.
+ #
+ # Both only ever DOWNGRADE. A sweep that happens to cross providers still alerts.
+ ports, hosts = f['unique_dst_ports'], f['unique_dst_hosts']
+ if ports < 12 and hosts < 12 or f['failure_ratio'] < .5: return
+ from detectors.reputation import describe
+ net=describe(e['dst_ip']); spread=_provider_spread(f)
+ # port sweep: many distinct ports -> the defining feature of a service/port scan
+ if ports >= 12:
+  return alert(e,'recon_scan','vertical_scan',.8,{**f,**net,'provider_spread':round(spread,3)},['T1046'],'recon-fanout-v2')
+ # host sweep with few ports: only a real enumeration if the destinations are NOT provider CDNs
+ if spread >= 0.5:
+  return alert(e,'recon_scan','horizontal_scan',.5,{**f,**net,'provider_spread':round(spread,3),
+   'downgrade_reason':f'{spread:.0%} of the fan-out destinations are high-volume provider/CDN networks '
+                      'and only {ports} distinct ports were touched; consistent with content distribution '
+                      'rather than host enumeration'},
+   ['T1046'],'recon-fanout-v2')
+ return alert(e,'recon_scan','horizontal_scan',.8,{**f,**net,'provider_spread':round(spread,3)},['T1046'],'recon-fanout-v2')
 def exfil(e,f):
  # One 600KB HTTPS upload (single session) is a photo/attachment. Real staged exfil is
  # SUSTAINED -> require >=3 sessions in the window (matches the 'sustained_outbound' subtype).

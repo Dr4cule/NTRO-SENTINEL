@@ -197,5 +197,72 @@ class DdosMdnsSuppression(unittest.TestCase):
                                              completion_ratio=1.0)))
 
 
+class ReconFanout(unittest.TestCase):
+    """The browser-vs-sweep discrimination. A blanket failure_ratio raise was tried and
+    REJECTED because recorded nmap sweeps sit at 0.50-0.66 in a busy window, so raising the
+    gate to 0.7 silently disabled real scan detection. Port diversity + provider spread do
+    the work instead."""
+
+    CDN = ['172.64.155.209', '104.21.21.127', '23.63.84.105', '13.211.115.13', '151.101.1.140',
+           '104.18.43.204', '172.67.1.1', '104.16.1.1', '141.101.1.1', '23.55.1.1', '18.66.1.1',
+           '104.20.1.1', '23.62.1.1', '18.164.1.1']
+
+    def _run(self, hosts, ports, fail, dests):
+        e = {'kind': 'early_event', 'ts': 1000, 'src_ip': '10.9.9.9', 'src_port': 1,
+             'dst_ip': '198.51.100.1', 'dst_port': 22, 'proto': 'tcp', 'conn_state': 'S0'}
+        f = {'window_seconds': 30, 'unique_dst_hosts': hosts, 'unique_dst_ports': ports,
+             'scan_rate': 2.0, 'failure_ratio': fail, 'dst_hosts': dests}
+        return rules.recon(e, f)
+
+    def test_live_false_positive_is_downgraded(self):
+        """34 CDN edge IPs across 9 ports at failure 0.51 was a `horizontal_scan/high` from a
+        single page load. It must now rank as medium with the spread recorded."""
+        a = self._run(34, 9, 0.51, self.CDN * 3)
+        self.assertIsNotNone(a)
+        self.assertEqual(a['subtype'], 'horizontal_scan')
+        self.assertEqual(a['severity'], 'medium')
+        self.assertGreater(a['supporting_evidence']['provider_spread'], 0.5)
+        self.assertIn('downgrade_reason', a['supporting_evidence'])
+
+    def test_port_sweep_stays_high(self):
+        a = self._run(29, 29, 0.58, [f'198.51.100.{i}' for i in range(1, 30)])
+        self.assertEqual(a['subtype'], 'vertical_scan')
+        self.assertEqual(a['severity'], 'high')
+
+    def test_nmap_style_sweep_at_the_half_failure_boundary_still_fires(self):
+        """Regression guard: this is the case a failure_ratio>=0.7 gate would have broken."""
+        a = self._run(24, 24, 0.50, [f'198.51.100.{i}' for i in range(1, 25)])
+        self.assertEqual(a['subtype'], 'vertical_scan')
+        self.assertEqual(a['severity'], 'high')
+
+    def test_real_host_enumeration_stays_high(self):
+        a = self._run(30, 3, 0.90, [f'10.5.0.{i}' for i in range(1, 31)])
+        self.assertEqual(a['subtype'], 'horizontal_scan')
+        self.assertEqual(a['severity'], 'high')
+
+    def test_cross_provider_sweep_with_many_ports_still_fires(self):
+        """Downgrade only applies to the few-port host-sweep branch; a port sweep is a port
+        sweep regardless of where the targets live."""
+        a = self._run(30, 26, 0.66, self.CDN[:14] + [f'198.51.100.{i}' for i in range(1, 17)])
+        self.assertEqual(a['subtype'], 'vertical_scan')
+        self.assertEqual(a['severity'], 'high')
+
+    def test_low_failure_fanout_is_suppressed(self):
+        self.assertIsNone(self._run(34, 9, 0.10, self.CDN * 3))
+
+    def test_narrow_fanout_never_alerts(self):
+        self.assertIsNone(self._run(5, 4, 0.9, self.CDN[:5]))
+
+    def test_absent_destination_list_cannot_downgrade(self):
+        """A missing dst_hosts must not make the detector quieter: spread defaults to 0."""
+        e = {'kind': 'early_event', 'ts': 1000, 'src_ip': '10.9.9.9', 'src_port': 1,
+             'dst_ip': '198.51.100.1', 'dst_port': 22, 'proto': 'tcp', 'conn_state': 'S0'}
+        f = {'window_seconds': 30, 'unique_dst_hosts': 30, 'unique_dst_ports': 3,
+             'scan_rate': 2.0, 'failure_ratio': 0.9}
+        a = rules.recon(e, f)
+        self.assertEqual(a['severity'], 'high')
+        self.assertEqual(a['supporting_evidence']['provider_spread'], 0.0)
+
+
 if __name__ == '__main__':
     unittest.main()
