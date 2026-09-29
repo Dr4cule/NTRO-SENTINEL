@@ -216,36 +216,74 @@ class ReconFanout(unittest.TestCase):
 
     def test_live_false_positive_is_downgraded(self):
         """34 CDN edge IPs across 9 ports at failure 0.51 was a `horizontal_scan/high` from a
-        single page load. It must now rank as medium with the spread recorded."""
+        single page load. It must now rank below the equivalent non-provider fan-out."""
         a = self._run(34, 9, 0.51, self.CDN * 3)
         self.assertIsNotNone(a)
         self.assertEqual(a['subtype'], 'horizontal_scan')
-        self.assertEqual(a['severity'], 'medium')
         self.assertGreater(a['supporting_evidence']['provider_spread'], 0.5)
         self.assertIn('downgrade_reason', a['supporting_evidence'])
+        # the provider fan-out must score strictly below a same-shape non-provider fan-out
+        same = self._run(34, 9, 0.51, [f'10.5.0.{i}' for i in range(1, 35)])
+        self.assertLess(a['confidence'], same['confidence'])
 
     def test_port_sweep_stays_high(self):
         a = self._run(29, 29, 0.58, [f'198.51.100.{i}' for i in range(1, 30)])
         self.assertEqual(a['subtype'], 'vertical_scan')
-        self.assertEqual(a['severity'], 'high')
+        self.assertIn(a['severity'], ('high', 'critical'))
 
     def test_nmap_style_sweep_at_the_half_failure_boundary_still_fires(self):
         """Regression guard: this is the case a failure_ratio>=0.7 gate would have broken."""
         a = self._run(24, 24, 0.50, [f'198.51.100.{i}' for i in range(1, 25)])
         self.assertEqual(a['subtype'], 'vertical_scan')
-        self.assertEqual(a['severity'], 'high')
+        self.assertIn(a['severity'], ('high', 'critical'))
+
+    def test_confidence_scales_with_evidence(self):
+        """Continuous scoring: more ports and more failures must never score LOWER."""
+        scores = [self._run(p, p, .9, [f'198.51.100.{i}' for i in range(1, p + 1)])['confidence']
+                  for p in (13, 20, 30, 45)]
+        self.assertEqual(scores, sorted(scores))
+        self.assertGreater(scores[-1], scores[0], 'a 45-port sweep must outrank a 13-port one')
+
+    def test_alert_anchors_on_the_real_scan_target(self):
+        """The trigger flow's dst_ip is whatever crossed the threshold — often a CDN edge IP.
+        flow_id must name the highest-failure host instead, or an analyst chases the wrong host."""
+        trigger = '151.101.65.91'          # Fastly edge, the flow that tripped the gate
+        tgts = [{'dst_ip': f'198.51.100.{i}', 'failed': 3, 'attempts': 3, 'failure_ratio': 1.0}
+                for i in (77, 78, 79)]
+        tgts.append({'dst_ip': trigger, 'failed': 0, 'attempts': 2, 'failure_ratio': 0.0})
+        e = {'kind': 'early_event', 'ts': 1000, 'src_ip': '10.9.9.9', 'src_port': 1,
+             'dst_ip': trigger, 'dst_port': 443, 'proto': 'tcp', 'conn_state': 'S0'}
+        f = {'window_seconds': 30, 'unique_dst_hosts': 4, 'unique_dst_ports': 30, 'scan_rate': 2.0,
+             'failure_ratio': 0.6, 'dst_hosts': [t['dst_ip'] for t in tgts], 'scan_targets': tgts,
+             'anchor_dst': '198.51.100.77'}
+        a = rules.recon(e, f)
+        self.assertEqual(a['flow_id']['dst_ip'], '198.51.100.77')
+        self.assertEqual(a['supporting_evidence']['anchored_on'], 'highest per-host failure ratio')
+        # the source is still the scanner, and dedup still keys on it
+        self.assertEqual(a['flow_id']['src_ip'], '10.9.9.9')
+        self.assertEqual(a['supporting_evidence']['aggregation_key'], 'src=10.9.9.9')
+
+    def test_anchor_falls_back_when_no_target_data(self):
+        """Older evidence without scan_targets must still produce a valid alert."""
+        e = {'kind': 'early_event', 'ts': 1000, 'src_ip': '10.9.9.9', 'src_port': 1,
+             'dst_ip': '198.51.100.5', 'dst_port': 22, 'proto': 'tcp', 'conn_state': 'S0'}
+        f = {'window_seconds': 30, 'unique_dst_hosts': 20, 'unique_dst_ports': 25, 'scan_rate': 2.0,
+             'failure_ratio': 0.9, 'dst_hosts': None, 'scan_targets': None, 'anchor_dst': None}
+        a = rules.recon(e, f)
+        self.assertIsNotNone(a)
+        self.assertEqual(a['flow_id']['dst_ip'], '198.51.100.5')
 
     def test_real_host_enumeration_stays_high(self):
         a = self._run(30, 3, 0.90, [f'10.5.0.{i}' for i in range(1, 31)])
         self.assertEqual(a['subtype'], 'horizontal_scan')
-        self.assertEqual(a['severity'], 'high')
+        self.assertIn(a['severity'], ('high', 'critical'))
 
     def test_cross_provider_sweep_with_many_ports_still_fires(self):
         """Downgrade only applies to the few-port host-sweep branch; a port sweep is a port
         sweep regardless of where the targets live."""
         a = self._run(30, 26, 0.66, self.CDN[:14] + [f'198.51.100.{i}' for i in range(1, 17)])
         self.assertEqual(a['subtype'], 'vertical_scan')
-        self.assertEqual(a['severity'], 'high')
+        self.assertIn(a['severity'], ('high', 'critical'))
 
     def test_low_failure_fanout_is_suppressed(self):
         self.assertIsNone(self._run(34, 9, 0.10, self.CDN * 3))
@@ -260,7 +298,7 @@ class ReconFanout(unittest.TestCase):
         f = {'window_seconds': 30, 'unique_dst_hosts': 30, 'unique_dst_ports': 3,
              'scan_rate': 2.0, 'failure_ratio': 0.9}
         a = rules.recon(e, f)
-        self.assertEqual(a['severity'], 'high')
+        self.assertIn(a['severity'], ('high', 'critical'))
         self.assertEqual(a['supporting_evidence']['provider_spread'], 0.0)
 
     def test_every_recon_alert_carries_an_aggregation_key(self):

@@ -183,23 +183,36 @@ def recon(e,f):
  ports, hosts = f['unique_dst_ports'], f['unique_dst_hosts']
  if ports < 12 and hosts < 12 or f['failure_ratio'] < .5: return
  from detectors.reputation import describe
- net=describe(e['dst_ip']); spread=_provider_spread(f)
- # aggregation_key is REQUIRED: the Pipeline dedups on (class, subtype, aggregation_key) and
- # falls back to src|dst when it is absent — but a recon fan-out spans many dst_ips, so that
- # fallback would make every flow a unique key and defeat dedup entirely (observed: 12 alerts
- # for one nmap scan). Fan-out is a property of the SOURCE, so key on the source.
+ net=describe(f.get('anchor_dst') or e['dst_ip']); spread=_provider_spread(f)
  key={'aggregation_key':'src='+e['src_ip']}
+ # Anchor the alert on the host most likely to BE the scan target rather than whichever flow
+ # happened to cross the threshold. Without this the 5-tuple can name a CDN edge IP, which
+ # sends an analyst after the wrong host entirely.
+ anchor=f.get('anchor_dst') or e['dst_ip']; ae={**e,'dst_ip':anchor}
+ targets=f.get('scan_targets') or []
+ # Continuous score: confidence now tracks how far past threshold the evidence is, instead of
+ # being a fixed 0.8. Severity therefore carries information and the dashboard's confidence
+ # histogram stops being decorative. The base differs per branch because the branches are NOT
+ # equally strong evidence: 12+ distinct ports IS the definition of a port sweep, whereas a
+ # wide host fan-out over a handful of ports is weaker and needs more corroboration.
+ over_ports=max(0.0,min(1.0,(ports-12)/28.0))          # 12 ports -> 0, 40+ -> 1
+ over_hosts=max(0.0,min(1.0,(hosts-12)/48.0))          # 12 hosts -> 0, 60+ -> 1
+ fail_bonus=max(0.0,min(1.0,(f['failure_ratio']-0.5)*2))  # 0.50 -> 0, 0.75+ -> 1
+ ev={**f,**net,**key,'provider_spread':round(spread,3),'anchored_on':'highest per-host failure ratio'}
  # port sweep: many distinct ports -> the defining feature of a service/port scan
  if ports >= 12:
-  return alert(e,'recon_scan','vertical_scan',.8,{**f,**net,**key,'provider_spread':round(spread,3)},['T1046'],'recon-fanout-v2')
+  score=round(min(0.97,0.70+0.22*over_ports+0.08*fail_bonus),3)
+  return alert(ae,'recon_scan','vertical_scan',score,ev,['T1046'],'recon-fanout-v3')
  # host sweep with few ports: only a real enumeration if the destinations are NOT provider CDNs
  if spread >= 0.5:
-  return alert(e,'recon_scan','horizontal_scan',.5,{**f,**net,**key,'provider_spread':round(spread,3),
-   'downgrade_reason':f'{spread:.0%} of the fan-out destinations are high-volume provider/CDN networks '
-                      'and only {ports} distinct ports were touched; consistent with content distribution '
-                      'rather than host enumeration'},
-   ['T1046'],'recon-fanout-v2')
- return alert(e,'recon_scan','horizontal_scan',.8,{**f,**net,**key,'provider_spread':round(spread,3)},['T1046'],'recon-fanout-v2')
+  score=round(min(0.75,(0.60+0.25*over_hosts+0.10*fail_bonus)*0.65),3)
+  return alert(ae,'recon_scan','horizontal_scan',score,
+   {**ev,'downgrade_reason':f'{spread:.0%} of the fan-out destinations are high-volume provider/CDN networks '
+                           f'and only {ports} distinct ports were touched; consistent with content distribution '
+                           f'rather than host enumeration'},
+   ['T1046'],'recon-fanout-v3')
+ score=round(min(0.95,0.62+0.25*over_hosts+0.10*fail_bonus),3)
+ return alert(ae,'recon_scan','horizontal_scan',score,ev,['T1046'],'recon-fanout-v3')
 def exfil(e,f):
  # One 600KB HTTPS upload (single session) is a photo/attachment. Real staged exfil is
  # SUSTAINED -> require >=3 sessions in the window (matches the 'sustained_outbound' subtype).
@@ -218,9 +231,15 @@ def exfil(e,f):
    ev['downgrade_reason']=('destination is a high-volume provider/CDN network; a sustained upload '
                            'of this size is consistent with cloud sync/backup, but the ratio and '
                            'volume still warrant a look')
-   conf=.5                                      # 'medium': real exfil to a CDN host is possible, just less likely
-   ver='exfil-rules-v2'
+   conf=round(0.35+0.25*min(1.0,(f['session_count']-3)/17.0),3)   # continuous, capped at medium
+   ver='exfil-rules-v3'
   else:
-   conf=.9 if (a and a['flag']) else .8         # model concurs it's an outlier -> raise severity
-   ver='exfil-baseline-ml-v1' if a is not None else 'exfil-rules-v2'
+   # Continuous score instead of a flat 0.8/0.9: staged exfil grows with volume, asymmetry and
+   # session count, so severity should too. The ML second opinion can still raise it.
+   vol=min(1.0,max(0.0,(f['outbound_bytes']-500000)/4500000.0))     # 500KB -> 0, 5MB -> 1
+   ratio=min(1.0,max(0.0,(f['outbound_inbound_ratio']-5)/45.0))     # ratio 5 -> 0, 50 -> 1
+   sess=min(1.0,max(0.0,(f['session_count']-3)/27.0))               # 3 sessions -> 0, 30 -> 1
+   conf=round(min(0.97,0.6+0.37*max(vol,ratio,sess)),3)
+   if a and a['flag']: conf=round(min(0.99,conf+0.03),3)            # model concurs -> nudge up
+   ver='exfil-baseline-ml-v1' if a is not None else 'exfil-rules-v3'
   return alert(e,'exfiltration','sustained_outbound_anomaly',conf,ev,['T1041'],ver)

@@ -472,7 +472,7 @@ a temp dir and asserts the fallback behavior.
 
 | Command | Output | What it measures |
 |---|---|---|
-| `make test` | 110 unit tests | `test_features.py` (13: window eviction, six detection paths, DDoS subtypes + contract shape, benign FPR = 0, dedup, loadtest) · `test_csv_ingest.py` (2: both CSV flavors) · `test_c2_structure.py` (24: structural C2 gates, direction/size/reputation, provider downgrade, fail-open semantics, mDNS-DDoS suppression, and the 443-must-not-downgrade regression guard) · `test_contracts_and_security.py` (~30 **negative** tests: bool/out-of-range/non-numeric confidence, missing/mistyped contract fields, exact `flow_id` keys, duplicate `alert_id` → `IntegrityError` → idempotent, **tampered / deleted / reordered** chain rows → `verify_chain` invalid, correlation suppression, CSV rejection, `Infinity` values, BOM/space headers, upload cap < container memory, auth contract) · `test_models_and_fallbacks.py` (16: train/eval vocabulary disjointness guards, exfil reputation never-silences invariant, encrypted fallback three-signal requirement) · `test_c2_structure.py::ReconFanout` (8: browser-vs-sweep discrimination, port-diversity and provider-spread downgrades, and the boundary guard that a 0.50-failure nmap sweep still fires) · `test_model_integrity.py` (7: manifest digests present and matching disk, stale-leaked-eval guard, missing-dir → None, absent-digest fails closed) · `test_api_auth.py` (9 API-level: 503 unconfigured, 401 missing/wrong token, 201 correct, reads open, 413 oversized, 400 empty; skipped if `fastapi`/`httpx` absent) |
+| `make test` | 125 unit tests | `test_features.py` (13: window eviction, six detection paths, DDoS subtypes + contract shape, benign FPR = 0, dedup, loadtest) · `test_csv_ingest.py` (2: both CSV flavors) · `test_c2_structure.py` (24: structural C2 gates, direction/size/reputation, provider downgrade, fail-open semantics, mDNS-DDoS suppression, and the 443-must-not-downgrade regression guard) · `test_contracts_and_security.py` (~30 **negative** tests: bool/out-of-range/non-numeric confidence, missing/mistyped contract fields, exact `flow_id` keys, duplicate `alert_id` → `IntegrityError` → idempotent, **tampered / deleted / reordered** chain rows → `verify_chain` invalid, correlation suppression, CSV rejection, `Infinity` values, BOM/space headers, upload cap < container memory, auth contract) · `test_models_and_fallbacks.py` (16: train/eval vocabulary disjointness guards, exfil reputation never-silences invariant, encrypted fallback three-signal requirement) · `test_c2_structure.py::ReconFanout` (13: browser-vs-sweep discrimination, port-diversity and provider-spread downgrades, and the boundary guard that a 0.50-failure nmap sweep still fires) · `test_model_integrity.py` (7: manifest digests present and matching disk, stale-leaked-eval guard, missing-dir → None, absent-digest fails closed) · `test_label_join.py` (17: Wilson interval behaviour, label parsing incl. unmapped labels, and the harness's refusal paths — it must decline to report on a thin join, and alert counts must be independent of which IPs are labelled) · `test_api_auth.py` (9 API-level: 503 unconfigured, 401 missing/wrong token, 201 correct, reads open, 413 oversized, 400 empty; skipped if `fastapi`/`httpx` absent) |
 | `make evaluate` | `eval/results.{json,md}` | Scenario-level coverage, truth×pred confusion, benign FPR, **alert-level** precision |
 | `make loadtest` | `artifacts/loadtest.{json,md}` | In-process paced-replay envelope (~5000 flows/s on a dev box) — **explicitly NOT a PCAP Mbps proof** |
 | `make model-eval` | `models/artifacts/dga_holdout_evaluation.json` | Disjoint generated holdout, P/R/F1 + confusion |
@@ -485,7 +485,7 @@ precision, and its `confusion_and_precision` docstring states flow-level recall/
 alert can cover many flows, so flow-level F1 is not computable from this corpus.
 
 **Current results (re-verified 2026-09-29):** `8/8` attack scenarios detected · benign alerts
-`0` (FPR `0.0`) · DDoS subtype scenarios matched `3/3` · `110/110` tests pass, 0 skips.
+`0` (FPR `0.0`) · DDoS subtype scenarios matched `3/3` · `125/125` tests pass, 0 skips.
 
 **What is NOT claimed** (from `README.md` + `PERFORMANCE.md` + `docs/LIMITATIONS.md`):
 - No scored precision/recall/F1 on external labeled PCAPs — that needs the Zeek Tier-A replay
@@ -720,7 +720,7 @@ python3 -c "import json,sklearn; \
 
 | Item | Value |
 |---|---|
-| Tests | `110/110` pass, 0 skips (13 feature · 2 CSV · 24 C2-structure · 10 recon-fanout · 16 model/exfil/encrypted · 7 model-integrity · ~26 contract/security negative · 9 API auth) |
+| Tests | `125/125` pass, 0 skips (13 feature · 2 CSV · 24 C2-structure · 13 recon-fanout · 16 model/exfil/encrypted · 7 model-integrity · ~26 contract/security negative · 9 API auth · 17 external-scoring harness) |
 | Eval | `8/8` attack scenarios, benign alerts `0`, FPR `0.0`, DDoS subtypes `3/3` |
 | Hash chain | `valid: true` |
 | ML | **inactive** (artifacts `sklearn 1.6.0` vs runtime `1.8.0`) |
@@ -794,6 +794,41 @@ lateral C2 to `10.x` / `192.168.x` / `100.64.x` is invisible. That gate is load-
 118-alert false-positive storm. It needs a second signal (host-role, port profile, DNS context)
 before it can be loosened safely.
 
+## 20.1 Third pass (2026-09-29) — recon anchoring, continuous confidence, external-scoring harness
+
+**Recon anchoring.** A fan-out alert's `flow_id` is a single 5-tuple, so it was naming whichever
+flow crossed the threshold — usually a CDN edge IP, which sends an analyst after the wrong host.
+`ReconFeatures` now tallies per-host attempt/failure counts and emits `scan_targets` (ranked by
+failure ratio) plus `anchor_dst`. The rule anchors `flow_id.dst_ip` on the highest-failure host
+while keeping `aggregation_key = 'src='+src_ip` so dedup is unaffected. Verified: a sweep whose
+trigger flow was a Fastly IP now anchors on the actual TEST-NET target.
+
+**Continuous confidence.** `recon` and `exfil` no longer emit fixed 0.8. Score now tracks how far
+past threshold the evidence is, so `severity` carries information and the dashboard's confidence
+histogram stops being decorative. Measured recon ladder: 12 ports → 0.700, 24 → 0.794, 40 → 0.970.
+Exfil: 520 KB/5.5×/3 sessions → 0.604, 1 MB/14.7×/23 → 0.904, 5 MB/50×/30 → 0.990. Provider
+destinations stay capped at medium, and an unknown destination always outranks a provider one.
+
+Calibrating this surfaced a real error in the first attempt: a shared base score ranked an
+unambiguous 24-port nmap sweep as `medium`. The two branches are not equally strong evidence —
+12+ distinct ports *is* the definition of a port sweep, while a wide host fan-out over a few ports
+needs corroboration — so the bases are now per-branch (0.70 port / 0.62 host).
+
+**`eval/label_join.py` (external P/R harness).** The only sanctioned route to a real precision/
+recall number, and it was missing. Joins external ground truth to alerts by (source IP, time
+window) — the only join available to a payload-blind sensor — and reports per-class P/R/F1 with
+**Wilson 95% intervals**, the confusion matrix, join rate, and the count of alerts on sources the
+dataset says nothing about (not scored as false positives). It **refuses to report** when the
+join is thin (<50 events, or no class with ≥10 samples) rather than emitting a number derived from
+three alerts, and it requires `--attack-ips` explicitly. Ground truth is read only *after* the
+pipeline has run, so labels cannot influence detection — asserted by a test that flips which IP
+is labelled attacker and requires the alert count to be identical.
+
+Running it is now one command once a permitted labelled capture exists:
+```bash
+python3 -m eval.label_join --pcap capture.pcap --labels labels.csv --attack-ips 172.16.0.1 --window 300
+```
+
 ## 21. Suggested next steps, in priority order
 
 Items 1–3 below are **done** (see §15.1, §20); the list is retained so the reasoning behind
@@ -806,11 +841,11 @@ each fix stays discoverable.
    IP still surfaces at a lower score.
 3. ~~Give `encrypted_malware` a metadata-only fallback~~ — **DONE**, three-signal heuristic
    scored below the JA3 path.
-4. **Replace the remaining fixed confidences.** `recon` and `exfil`-without-ML still emit `0.8`
-   and `encrypted` `0.7` regardless of how extreme the features are, so the dashboard's
-   confidence histogram carries little information for those classes.
-5. **Zeek Tier-A validation with a real labeled PCAP** and an IP+time+port label join — the
-   only path to a legitimate external precision/recall number.
+4. **Replace the remaining fixed confidences.** Partially done: `recon` and `exfil` now score
+   continuously (§20.1). `encrypted_malware` still emits a fixed `0.7`/`0.5`.
+5. **Zeek Tier-A validation with a real labeled PCAP.** The scoring harness now exists
+   (`eval/label_join.py`, §20.1); only the input dataset is missing. One command produces a
+   Wilson-interval P/R report once a permitted labelled capture is supplied.
 6. **Retrain the DGA model on real, family-separated public labels** (dns-zen, DGArchive) with
    per-family splits. The current 0.48 F1 is honest but weak, and the root cause is known: it
    learned length, not entropy (§20).

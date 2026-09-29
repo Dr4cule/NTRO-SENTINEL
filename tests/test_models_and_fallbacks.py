@@ -60,10 +60,20 @@ class ExfilReputation(unittest.TestCase):
     def test_provider_upload_is_downgraded_not_suppressed(self):
         a = rules.exfil(self._e('104.21.21.127'), self._f(destination='104.21.21.127'))
         self.assertIsNotNone(a, 'must still alert — a CDN upload can be real exfil')
-        self.assertEqual(a['severity'], 'medium')
-        self.assertEqual(a['confidence'], 0.5)
+        self.assertIn(a['severity'], ('low', 'medium'),
+                      'a provider destination must never rank high')
+        self.assertLessEqual(a['confidence'], 0.7)
         self.assertEqual(a['supporting_evidence']['asn_name'], 'Cloudflare')
         self.assertIn('downgrade_reason', a['supporting_evidence'])
+
+    def test_exfil_confidence_scales_with_evidence(self):
+        """Continuous scoring: a bigger, more asymmetric, longer transfer must never score lower."""
+        small = rules.exfil(self._e('198.51.100.77'),
+                            self._f(outbound_bytes=520_000, outbound_inbound_ratio=5.5, session_count=3))
+        big = rules.exfil(self._e('198.51.100.77'),
+                          self._f(outbound_bytes=5_000_000, outbound_inbound_ratio=50, session_count=30))
+        self.assertGreater(big['confidence'], small['confidence'])
+        self.assertIn(big['severity'], ('high', 'critical'))
 
     def test_unknown_host_upload_stays_high_or_critical(self):
         """An unattributable destination must never be downgraded. It scores 0.8, or 0.9 when
