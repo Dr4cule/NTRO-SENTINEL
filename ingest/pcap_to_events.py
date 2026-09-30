@@ -28,10 +28,21 @@ def _key(flows, src, sp, dst, dp, proto):
 
 def _conn_state(f):
     # Simplified Zeek conn_state: enough to distinguish attempts/scans (S0/REJ) from completed (SF).
+    #
+    # A RST is itself a RESPONSE packet, so the old test `not synack and resp_pkts == 0` could
+    # never be true when an RST had been received: the RST sets resp_pkts=1, the branch was
+    # skipped, and every connection refused fell through to RSTO. features/recon_scan.py counts
+    # a failed attempt as ('S0','REJ') only, so a real inbound port scan scored failure_ratio
+    # ~0.01 instead of ~1.0 and was silently dropped. Worse, the bug hid itself: OUTBOUND scans
+    # to an unrouted address get no reply at all (resp_pkts=0 -> S0) and were detected fine,
+    # while INBOUND scans of a live host - the case that actually matters - were invisible.
+    # RSTO means "reset after the originator sent payload"; a SYN-only probe that is refused
+    # is a REJ. Distinguish on whether the originator ever sent a byte.
     if f['proto'] == 'tcp':
-        if not f['synack'] and f['resp_pkts'] == 0:
-            return 'REJ' if f['rst'] else 'S0'
-        if f['synack'] and (f['fin'] or f['orig_bytes'] or f['resp_bytes']):
+        if not f['synack']:
+            if f['rst']: return 'RSTO' if f['orig_bytes'] else 'REJ'
+            return 'S0'
+        if f['fin'] or f['orig_bytes'] or f['resp_bytes']:
             return 'SF'
         return 'RSTO' if f['rst'] else 'OTH'
     return 'SF' if f['resp_pkts'] else 'S0'
