@@ -530,3 +530,30 @@ dataset_inventory.{json,md} · real_dataset_registry.yml · verification.log · 
 ```
 
 **Data** `/home/ntro_data` — outside git, referenced by digest.
+
+---
+
+## 14. How to reach the dashboard
+
+| | |
+|---|---|
+| **Public URL (share this one)** | `http://sentinal-flow.arshlaan.me` |
+| Direct IP | `http://3.26.197.212` |
+| Internal | `http://127.0.0.1:8001` |
+| Upload token | `POST /api/ingest` requires `Authorization: Bearer <SENTINEL_API_TOKEN>` |
+
+**HTTP only — there is no TLS listener on 443.** nginx serves port 80 only. Browsers that
+auto-upgrade a bare hostname to HTTPS will fail with "connection refused", because nothing is
+listening on 443. Always include the scheme when sharing the link:
+
+```
+http://sentinal-flow.arshlaan.me      <- works
+sentinal-flow.arshlaan.me             <- may fail in a browser that forces HTTPS
+```
+
+This is a deliberate decision (no certificate issued), not a misconfiguration: nginx answers
+`200` for `GET /` with `Host: sentinal-flow.arshlaan.me`.
+
+**Security note:** port 80 is open to the public internet and the read endpoints are unauthenticated,
+so anyone who finds the URL can watch the live alert feed. Writes are token-gated. To restrict
+reads, add an EC2 security-group rule allowing only specific source IPs.
