@@ -341,6 +341,7 @@
       <div class="ftrow">
         <div class="grp" id="filters"></div>
         <div class="grp" id="sevfilters"></div>
+        <label class="grp fptoggle" title="Hide c2_beaconing/periodic_session alerts the detector itself downgraded as a provider/CDN keepalive (e.g. Cloudflare HTTP/2 PING). They stay in the store and the API; this only changes what the feed shows."><input type="checkbox" id="hidefp" checked> hide provider keepalives</label>
       </div>
       <!-- aggregate-CSV assessment. Populated only for endpoint-less flow CSVs, where the
            server returns a traffic assessment instead of per-flow alerts. -->
@@ -384,7 +385,13 @@ const ORDER=Object.keys(THREAT);
 const $=id=>document.getElementById(id);
 const esc=v=>String(v==null?"":v).replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));
 const tl=(c)=>THREAT[c]?THREAT[c].l:c, hx=(c)=>THREAT[c]?THREAT[c].h:"#7484a0";
-let ALERTS=[], FILTER=null, SEV=null, Q="", SHOWN=60; const PAGE=60;
+let ALERTS=[], FILTER=null, SEV=null, Q="", SHOWN=60, HIDEFP=true; const PAGE=60;
+// Only the DELIBERATELY downgraded provider keepalive is hidden, and only by this exact
+// signature: a c2 periodic_session carrying a downgrade_reason. No real detection matches it,
+// because a genuine beacon never arrives with the detector's own "this is probably legitimate"
+// note attached. The alerts are still fetched and still counted -- this is a view filter, not
+// a deletion, and the footer reports how many are being held back.
+const isKeepaliveFP=a=>a.threat_class==='c2_beaconing'&&a.subtype==='periodic_session'&&!!(a.supporting_evidence||{}).downgrade_reason;
 
 /* ---------- shared tooltip ---------- */
 const tip=$("tip");
@@ -515,9 +522,12 @@ function renderFilters(byClass){
   const sbtn=(key,label)=>`<button data-s="${key}" aria-pressed="${SEV===key}">${label}</button>`;
   sv.innerHTML=`<span class="glab">Severity</span>`+sbtn("","Any")+SEVS.map(s=>sbtn(s,s)).join("");
   sv.querySelectorAll("button").forEach(b=>b.addEventListener("click",()=>{SEV=b.dataset.s||null;SHOWN=PAGE;renderFeed();}));
+  const fp=$("hidefp");
+  if(fp) fp.addEventListener("change",()=>{HIDEFP=fp.checked;SHOWN=PAGE;renderFeed();});
 }
 const sigOf=a=>{const ev=a.supporting_evidence||{};return Object.keys(ev).filter(k=>!["aggregation_key","window_seconds"].includes(k)).slice(0,2).join(" · ")||"detector signal";};
 function matches(a){
+  if(HIDEFP && isKeepaliveFP(a)) return false;
   if(FILTER && a.threat_class!==FILTER) return false;
   if(SEV && (a.severity||"low")!==SEV) return false;
   if(Q){const f=a.flow_id||{};
@@ -527,7 +537,13 @@ function matches(a){
 function renderFeed(){
   const rows=$("c-rows"), more=$("c-more");
   const list=ALERTS.filter(matches), total=list.length, view=list.slice(0,SHOWN);
-  if(!total){rows.innerHTML=empty(ALERTS.length?"No alerts match — clear filters or search.":"No alerts yet — start a replay to populate the stream.");more.innerHTML="";return;}
+  const held=HIDEFP?ALERTS.filter(isKeepaliveFP).length:0;
+  if(!total){
+    const msg=ALERTS.length
+      ? (held?`No alerts match — ${held} provider keepalive${held>1?"s are":" is"} hidden by the toggle. Clear filters or search.`
+             :"No alerts match — clear filters or search.")
+      : "No alerts yet — start a replay to populate the stream.";
+    rows.innerHTML=empty(msg);more.innerHTML="";return;}
   rows.innerHTML=view.map((a,i)=>{
     const f=a.flow_id||{};
     return `<div class="trow" data-i="${i}" role="button" tabindex="0" aria-label="${esc(tl(a.threat_class))} alert, ${esc(a.severity)} severity">
@@ -539,7 +555,7 @@ function renderFeed(){
   }).join("");
   rows.querySelectorAll(".trow").forEach(r=>{const open=()=>openDrawer(view[+r.dataset.i]);r.addEventListener("click",open);r.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();open();}});});
   const remaining=total-view.length, capped=ALERTS.length>=250;
-  more.innerHTML=`<span class="cnt">Showing ${view.length} of ${total}${capped?" (most recent 250)":""}</span>`+(remaining>0?`<button id="moreBtn">Load ${Math.min(PAGE,remaining)} more</button>`:"");
+  more.innerHTML=`<span class="cnt">Showing ${view.length} of ${total}${held?` · ${held} provider keepalive${held>1?"s":""} hidden`:""}${capped?" (most recent 250)":""}</span>`+(remaining>0?`<button id="moreBtn">Load ${Math.min(PAGE,remaining)} more</button>`:"");
   if(remaining>0)$("moreBtn").addEventListener("click",()=>{SHOWN+=PAGE;renderFeed();});
 }
 const PRETTY=k=>k.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase());

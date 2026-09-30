@@ -21,6 +21,30 @@ class Pipeline:
   # dedup re-emits the same beacon ~10x (live-spam seen Sep 2026: 9 alerts per agg key).
   # 300s collapses each beacon to one alert; bursty classes (ddos/recon) stay at 30s.
   self.dedup_windows={'c2_beaconing':300}
+  # Per-conversation alert budget. Dedup above limits how OFTEN one behaviour re-alerts, but
+  # a chatty peer can still own the feed: three Cloudflare keepalive destinations produced 192
+  # of 247 alerts over 11 hours, burying every real detection. This caps how many alerts any
+  # single source->destination pair may contribute per window, and counts the rest instead of
+  # discarding them silently.
+  #
+  # Deliberately NOT a suppression of the detection itself. The first N alerts of any
+  # conversation always pass, so a real C2 campaign still shows its opening activity, and a
+  # destination never seen before always has a full budget. What is removed is repetition of
+  # something already reported -- the definition of alert fatigue. Set
+  # SENTINEL_ALERT_BUDGET=0 to disable entirely.
+  self.budget_n=int(os.getenv('SENTINEL_ALERT_BUDGET','3'))
+  self.budget_window=float(os.getenv('SENTINEL_ALERT_BUDGET_WINDOW','3600'))
+  self.budget_seen={}; self.budget_suppressed=0; self.budget_suppressed_by={}
+ def _budget_allows(self,item,ts):
+  """True while this src->dst pair is still under its alert budget."""
+  if self.budget_n<=0: return True
+  fid=item.get('flow_id') or {}; key=(fid.get('src_ip'),fid.get('dst_ip'))
+  seen=[t for t in self.budget_seen.get(key,()) if ts-t<self.budget_window]
+  if len(seen)>=self.budget_n:
+   self.budget_seen[key]=seen; self.budget_suppressed+=1
+   self.budget_suppressed_by[item.get('threat_class')]=self.budget_suppressed_by.get(item.get('threat_class'),0)+1
+   return False
+  self.budget_seen[key]=seen+[ts]; return True
  def process(self,e):
   ts=float(e.get('ts',time.time())); candidates=[]
   if e.get('kind') in ('conn','early_event'):
@@ -31,7 +55,9 @@ class Pipeline:
   for item in (x for x in candidates if x):
    evidence=item['supporting_evidence']; key=(item['threat_class'],item['subtype'],evidence.get('aggregation_key',item['flow_id']['src_ip']+'|'+item['flow_id']['dst_ip']))
    window=self.dedup_windows.get(item['threat_class'],30)
-   if ts-self.emitted.get(key,float('-inf'))>=window: self.emitted[key]=ts;fresh.append(item)
+   if ts-self.emitted.get(key,float('-inf'))>=window:
+    self.emitted[key]=ts
+    if self._budget_allows(item,ts): fresh.append(item)
   return fresh + self.correlation.process(fresh)
 
 def redis_worker(redis_url=os.getenv('REDIS_URL','redis://redis:6379/0'), stream='telemetry', group='sentinel', consumer='worker-1'):

@@ -32,6 +32,7 @@ def consumer(q, store, pipeline, metrics, stop=STOP):
     """The ONLY writer to the store -> hash chain stays consistent. `stop` defaults to the
     global STOP (live/CLI runs); an upload passes its own event so repeated calls are isolated."""
     last_metric = 0.0
+    last_reported_suppressed = 0
     def _telemetry(**kw):
         # A telemetry write must never be able to kill the only consumer thread. It used to be
         # unguarded, so one failed INSERT (e.g. the store's -wal file briefly unwritable) raised
@@ -49,6 +50,16 @@ def consumer(q, store, pipeline, metrics, stop=STOP):
         metrics.observe((time.perf_counter() - t) * 1000, len(alerts))
         now = time.time()
         if now - last_metric >= 2: _telemetry(**metrics.snapshot()); last_metric = now
+        # Report budget-suppressed repeats rather than dropping them invisibly: an analyst
+        # should be able to tell "nothing happened" from "this peer is still talking, we have
+        # simply already reported it N times".
+        suppressed = getattr(pipeline, 'budget_suppressed', 0)
+        if suppressed != last_reported_suppressed:
+            by = getattr(pipeline, 'budget_suppressed_by', {})
+            print(f'[budget] {suppressed} repeat alert(s) suppressed (budget '
+                  f'{getattr(pipeline, "budget_n", 0)} per src|dst per '
+                  f'{int(getattr(pipeline, "budget_window", 0))}s) {by}', file=sys.stderr)
+            last_reported_suppressed = suppressed
         q.task_done()
     _telemetry(**metrics.snapshot())
 
