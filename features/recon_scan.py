@@ -1,6 +1,6 @@
-from .base import WindowState
+from .base import WindowState, flow_identity
 class ReconFeatures:
- def __init__(self): self.state=WindowState(30)
+ def __init__(self): self.state=WindowState(30,dedupe_by=flow_identity)
  def update(self,e,ts):
   vals=self.state.add(e['src_ip'],ts,e)
   hosts={x['dst_ip'] for x in vals}; ports={x['dst_port'] for x in vals}

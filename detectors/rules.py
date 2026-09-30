@@ -248,7 +248,11 @@ def recon(e,f):
  # Anchor the alert on the host most likely to BE the scan target rather than whichever flow
  # happened to cross the threshold. Without this the 5-tuple can name a CDN edge IP, which
  # sends an analyst after the wrong host entirely.
- anchor=f.get('anchor_dst') or e['dst_ip']; ae={**e,'dst_ip':anchor}
+ anchor=f.get('anchor_dst') or e['dst_ip']
+ # F12: the old code did ae={**e,'dst_ip':anchor}, keeping the ports of the event that
+ # tripped the threshold but replacing the host, producing a five-tuple that never existed on
+ # the wire -- an analyst following it to a capture would find nothing. Report the REAL
+ # observed connection and name the anchor as evidence instead.
  targets=f.get('scan_targets') or []
  # Continuous score: confidence now tracks how far past threshold the evidence is, instead of
  # being a fixed 0.8. Severity therefore carries information and the dashboard's confidence
@@ -258,29 +262,38 @@ def recon(e,f):
  over_ports=max(0.0,min(1.0,(ports-12)/28.0))          # 12 ports -> 0, 40+ -> 1
  over_hosts=max(0.0,min(1.0,(hosts-12)/48.0))          # 12 hosts -> 0, 60+ -> 1
  fail_bonus=max(0.0,min(1.0,(f['failure_ratio']-0.5)*2))  # 0.50 -> 0, 0.75+ -> 1
- ev={**f,**net,**key,'provider_spread':round(spread,3),'anchored_on':'highest per-host failure ratio'}
+ ev={**f,**net,**key,'provider_spread':round(spread,3),'anchored_on':'highest per-host failure ratio',
+     'anchor_is_evidence_only':True,
+     'flow_id_note':'flow_id is the REAL observed connection; anchor_dst is the most-likely scan target and is deliberately NOT this tuple (F12: the old code spliced the anchor host into the observed ports, inventing a five-tuple that never existed)'}
  # port sweep: many distinct ports -> the defining feature of a service/port scan
  if ports >= 12:
   score=round(min(0.97,0.70+0.22*over_ports+0.08*fail_bonus),3)
-  return alert(ae,'recon_scan','vertical_scan',score,ev,['T1046'],'recon-fanout-v3')
+  return alert(e,'recon_scan','vertical_scan',score,ev,['T1046'],'recon-fanout-v4')
  # host sweep with few ports: only a real enumeration if the destinations are NOT provider CDNs
  if spread >= 0.5:
   score=round(min(0.75,(0.60+0.25*over_hosts+0.10*fail_bonus)*0.65),3)
-  return alert(ae,'recon_scan','horizontal_scan',score,
+  return alert(e,'recon_scan','horizontal_scan',score,
    {**ev,'downgrade_reason':f'{spread:.0%} of the fan-out destinations are high-volume provider/CDN networks '
                            f'and only {ports} distinct ports were touched; consistent with content distribution '
                            f'rather than host enumeration'},
-   ['T1046'],'recon-fanout-v3')
+   ['T1046'],'recon-fanout-v4')
  score=round(min(0.95,0.62+0.25*over_hosts+0.10*fail_bonus),3)
- return alert(ae,'recon_scan','horizontal_scan',score,ev,['T1046'],'recon-fanout-v3')
+ return alert(e,'recon_scan','horizontal_scan',score,ev,['T1046'],'recon-fanout-v4')
 def exfil(e,f):
- # One 600KB HTTPS upload (single session) is a photo/attachment. Real staged exfil is
- # SUSTAINED -> require >=3 sessions in the window (matches the 'sustained_outbound' subtype).
- if f['outbound_bytes'] >= 500000 and f['outbound_inbound_ratio'] >= 5 and f['session_count'] >= 3:
+ # F15: the >=3-session rule meant the single most obvious case was invisible -- one 100 MB
+ # transfer at ratio 100 alerted nothing, because a single session cannot reach three. A single
+ # LARGE asymmetric transfer is evaluated on its own, at a much higher volume bar so an ordinary
+ # backup or video upload still does not trip it. Both branches keep the same ML treatment.
+ SINGLE_TRANSFER_BYTES = 50_000_000   # 50 MB in ONE session: not a photo, not an attachment
+ if (f['outbound_bytes'] >= 500000 and f['outbound_inbound_ratio'] >= 5 and f['session_count'] >= 3) \
+    or (f['outbound_bytes'] >= SINGLE_TRANSFER_BYTES and f['outbound_inbound_ratio'] >= 5 and f['session_count'] >= 1):
   from models.inference import exfil_anomaly
   from detectors.reputation import describe
   a=exfil_anomaly(f['outbound_bytes'],f['outbound_inbound_ratio'])   # ML second opinion; threshold above stays the sole gate
-  ev={**f,**describe(e['dst_ip']),'aggregation_key':e['src_ip']+'|'+e['dst_ip']}
+  ev={**f,**describe(e['dst_ip']),'aggregation_key':e['src_ip']+'|'+e['dst_ip'],
+      'exfil_rule':('single_large_transfer' if f['session_count']<3 else 'sustained_multi_session'),
+      'exfil_rule_note':('F15: this also fires on ONE large asymmetric transfer; the pre-F15 rule '
+                         'required >=3 sessions and therefore missed a single 100MB upload entirely')}
   if a is not None: ev['exfil_anomaly_score']=a['score']; ev['exfil_anomaly_flag']=a['flag']
   # Live-capture lesson (2026-09-29): 21 consecutive 'exfiltration' alerts, ALL to one
   # Cloudflare IP, 500KB-1MB per window at ratio 8-53 over 7-29 sessions. That is a large

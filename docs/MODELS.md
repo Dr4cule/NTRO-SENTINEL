@@ -16,27 +16,40 @@ and defend the models, in one file.
 
 ## 1. Which models exist and where they are used
 
-Two models. **Neither is load-bearing** — all six detectors work with no model present.
+Two models, and the two integrations are **not** the same. Getting this distinction right matters:
+saying "ML only enriches" when one of them can independently raise an alert is the kind of
+overstatement that does not survive a judge's read of the code.
 
-| Model | File | Runtime call | Where it plugs in | Can it gate an alert? |
+| Model | File | Runtime call | Where it plugs in | Can it raise an alert on its own? |
 |---|---|---|---|---|
-| **DGA classifier** | `models/artifacts/dga_char_ngrams.joblib` | `models.inference.dga_score(label)` | `detectors/rules.py::dns` | **No** — lexical rule is the gate |
-| **Exfiltration baseline** | `models/artifacts/exfil_baseline.joblib` | `models.inference.exfil_anomaly(bytes, ratio)` | `detectors/rules.py::exfil` | **No** — adds ≤ +0.03 confidence |
+| **DGA classifier** | `models/artifacts/dga_char_ngrams.joblib` | `models.inference.dga_score(label)` | `detectors/rules.py::dns` | **YES** — the gate is a logical OR |
+| **Exfiltration baseline** | `models/artifacts/exfil_baseline.joblib` | `models.inference.exfil_anomaly(bytes, ratio)` | `detectors/rules.py::exfil` | **No** — adds ≤ +0.03 confidence after a deterministic gate passes |
 
 Supporting module **`models/numeric_feats.py`** is **mandatory** — the DGA pickle references
 `models.numeric_feats.numeric_features` by module path. Without it the artifact will not load.
 
+Neither model is *load-bearing for the system*: remove both artifacts and all six detectors
+still run. But for the DGA class specifically, the model is one of two independent ways to raise
+an alert, not a decoration on top of a rule.
+
 ### The two gates, verbatim
 
 ```python
-# detectors/rules.py :: dns  — ML is the ALTERNATIVE branch, never the only one
+# detectors/rules.py :: dns  -- a PEER branch, not a fallback.
+# A short low-entropy label fails the lexical rule entirely, and the model alone will still
+# raise an alert:  label 'shop' (len 4, entropy 2.0) + model score 0.91 -> alert, at
+# model_version dns-lexical-ml-v1. Verified; see tools/verify_pipeline.py.
 if (f['label_length'] >= 18 and f['label_entropy'] >= 3.3) or (learned is not None and learned >= .8):
 
-# detectors/rules.py :: exfil — ML only nudges confidence after the deterministic gate passes
+# detectors/rules.py :: exfil -- genuinely enrichment only. The deterministic gate is
+# evaluated first and the model can neither create, suppress nor downgrade the alert.
 if f['outbound_bytes'] >= 500000 and f['outbound_inbound_ratio'] >= 5 and f['session_count'] >= 3:
     ...
     if a and a['flag']: conf = round(min(0.99, conf + 0.03), 3)   # model concurs -> nudge up
 ```
+
+**Accurate wording:** *DGA uses a rule-or-model gate; exfiltration uses a deterministic gate
+with optional anomaly-score enrichment.* Do not describe the DGA path as enrichment-only.
 
 ---
 

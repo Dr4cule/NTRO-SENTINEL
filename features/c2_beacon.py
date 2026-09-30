@@ -1,7 +1,7 @@
 from statistics import mean, pstdev
-from .base import WindowState
+from .base import WindowState, flow_identity
 class C2Features:
- def __init__(self): self.state=WindowState(300)
+ def __init__(self): self.state=WindowState(300,dedupe_by=flow_identity)
  def update(self,e,ts):
   key=e['src_ip']+'|'+e['dst_ip']; vals=self.state.add(key,ts,e); times=[x[0] for x in self.state.data[key]]; iats=[b-a for a,b in zip(times,times[1:])]
   # Guard against a window whose entries are no longer monotonic. The window is keyed on

@@ -28,7 +28,7 @@ from ingest.csv_to_events import has_endpoints
 STOP = threading.Event()
 PCAP_EXT = {'.pcap', '.pcapng', '.cap'}
 
-def consumer(q, store, pipeline, metrics, stop=STOP):
+def consumer(q, store, pipeline, metrics, stop=STOP, lag_fn=None):
     """The ONLY writer to the store -> hash chain stays consistent. `stop` defaults to the
     global STOP (live/CLI runs); an upload passes its own event so repeated calls are isolated."""
     last_metric = 0.0
@@ -49,7 +49,11 @@ def consumer(q, store, pipeline, metrics, stop=STOP):
         for a in alerts: store.append(a)
         metrics.observe((time.perf_counter() - t) * 1000, len(alerts))
         now = time.time()
-        if now - last_metric >= 2: _telemetry(**metrics.snapshot()); last_metric = now
+        if now - last_metric >= 2:
+            # F08: metrics.snapshot() defaults lag to 0, so the dashboard displayed a
+            # reassuring "stream lag 0" that was never measured. Report the real queue depth.
+            snap=metrics.snapshot(lag=lag_fn() if lag_fn else 0)
+            _telemetry(**snap); last_metric = now
         # Report budget-suppressed repeats rather than dropping them invisibly: an analyst
         # should be able to tell "nothing happened" from "this peer is still talking, we have
         # simply already reported it N times".
@@ -210,7 +214,8 @@ def main():
     args = ap.parse_args()
     q = queue.Queue(maxsize=100000)
     store, pipeline, metrics = AlertStore(), Pipeline(), StreamMetrics()
-    ct = threading.Thread(target=consumer, args=(q, store, pipeline, metrics), daemon=True); ct.start()
+    ct = threading.Thread(target=consumer, args=(q, store, pipeline, metrics, STOP, q.qsize),
+                         daemon=True); ct.start()
     for fp in args.file: ingest_file(fp, q)
     if args.once:
         q.join(); STOP.set(); ct.join(timeout=10)

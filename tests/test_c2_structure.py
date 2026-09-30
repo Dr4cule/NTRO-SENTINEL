@@ -246,7 +246,13 @@ class ReconFanout(unittest.TestCase):
 
     def test_alert_anchors_on_the_real_scan_target(self):
         """The trigger flow's dst_ip is whatever crossed the threshold — often a CDN edge IP.
-        flow_id must name the highest-failure host instead, or an analyst chases the wrong host."""
+
+        F12: the old behaviour REPLACED flow_id.dst_ip with the anchor host while keeping the
+        trigger's ports, so the alert carried a five-tuple that never existed on the wire; an
+        analyst matching it against a capture would find nothing. The anchor is still surfaced
+        (that was the original goal -- do not send an analyst to a CDN edge IP), but as evidence
+        alongside the REAL observed connection.
+        """
         trigger = '151.101.65.91'          # Fastly edge, the flow that tripped the gate
         tgts = [{'dst_ip': f'198.51.100.{i}', 'failed': 3, 'attempts': 3, 'failure_ratio': 1.0}
                 for i in (77, 78, 79)]
@@ -257,7 +263,13 @@ class ReconFanout(unittest.TestCase):
              'failure_ratio': 0.6, 'dst_hosts': [t['dst_ip'] for t in tgts], 'scan_targets': tgts,
              'anchor_dst': '198.51.100.77'}
         a = rules.recon(e, f)
-        self.assertEqual(a['flow_id']['dst_ip'], '198.51.100.77')
+        # F12: the tuple must be one that actually occurred on the wire.
+        self.assertEqual(a['flow_id']['dst_ip'], trigger)
+        self.assertEqual(a['flow_id']['dst_port'], 443)
+        self.assertEqual(a['flow_id']['src_port'], 1)
+        # and the anchor is still available so nobody chases the CDN edge host
+        self.assertEqual(a['supporting_evidence']['anchor_dst'], '198.51.100.77')
+        self.assertTrue(a['supporting_evidence']['anchor_is_evidence_only'])
         self.assertEqual(a['supporting_evidence']['anchored_on'], 'highest per-host failure ratio')
         # the source is still the scanner, and dedup still keys on it
         self.assertEqual(a['flow_id']['src_ip'], '10.9.9.9')

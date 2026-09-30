@@ -174,6 +174,19 @@ def layer_pipeline() -> None:
     check('L4 pipeline', 'exfil ML cannot gate (deterministic rule decides)',
           rules.exfil.__doc__ is None or True, 'gate is outbound>=500k and ratio>=5 and sessions>=3')
 
+    # 5. F03 GUARD: the DGA gate is a rule-OR-model gate, so the model CAN raise an alert alone.
+    #    Documentation that calls the DGA path "enrichment only" is wrong; this asserts the code
+    #    actually behaves as documented, so the two cannot drift apart silently again.
+    short = {'kind': 'dns', 'src_ip': '198.51.100.9', 'query': 'shop.example', 'ts': 1.0}
+    f2 = fd.DNSFeatures().update(short, 1.0)
+    lexical = f2['label_length'] >= 18 and f2['label_entropy'] >= 3.3
+    from unittest import mock
+    with mock.patch('models.inference.dga_score', return_value=0.91):
+        a2 = rules.dns(short, f2)
+    check('L4 pipeline', 'F03: DGA is a rule-OR-model gate (model CAN alert alone)',
+          (not lexical) and a2 is not None,
+          f'lexical_only={lexical} model_only_alert={a2 is not None} - docs must not say enrichment-only')
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()

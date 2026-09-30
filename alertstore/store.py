@@ -1,6 +1,7 @@
 """Local append-only forensic alert store with a tamper-evident hash chain."""
 from __future__ import annotations
 import hashlib, json, os, sqlite3, time
+from datetime import datetime, timezone
 from contextlib import closing
 from pathlib import Path
 
@@ -39,9 +40,12 @@ class AlertStore:
    try:
     row=con.execute('SELECT record_hash FROM alerts ORDER BY seq DESC LIMIT 1').fetchone(); previous=row['record_hash'] if row else '0'*64; digest=hashlib.sha256((previous+canonical).encode()).hexdigest()
     con.execute('INSERT INTO alerts (alert_id,timestamp,threat_class,severity,confidence,src_ip,dst_ip,record_json,prev_hash,record_hash) VALUES (?,?,?,?,?,?,?,?,?,?)',(record['alert_id'],record['timestamp'],record['threat_class'],record['severity'],record['confidence'],record['flow_id']['src_ip'],record['flow_id']['dst_ip'],canonical,previous,digest))
-    con.execute('COMMIT'); return True
+    seq=con.execute('SELECT MAX(seq) FROM alerts').fetchone()[0]
+    con.execute('COMMIT')
    except sqlite3.IntegrityError:
     con.execute('ROLLBACK'); return False
+  self._write_anchor(seq,digest)   # outside the txn; see verify_chain
+  return True
  def list(self,threat_class=None,severity=None,limit=250):
   sql='SELECT record_json FROM alerts WHERE 1=1'; values=[]
   if threat_class: sql+=' AND threat_class=?'; values.append(threat_class)
@@ -59,7 +63,41 @@ class AlertStore:
     actual=hashlib.sha256((previous+row['record_json']).encode()).hexdigest()
     if row['prev_hash']!=previous or row['record_hash']!=actual:return {'valid':False,'checked':checked,'failed_sequence':row['seq']}
     previous=actual; checked+=1
-  return {'valid':True,'checked':checked,'head_hash':previous}
+  out={'valid':True,'checked':checked,'head_hash':previous}
+  # F24: the chain alone cannot see a TAIL deletion. verify_chain walks the rows that are still
+  # present, so removing the newest record leaves an internally consistent prefix and it reports
+  # valid. Comparing the recomputed head against an anchor written at the time of appending is
+  # what actually detects it.
+  anchor=self._read_anchor()
+  if anchor:
+   out['anchored']=True
+   out['anchor_count']=anchor.get('count')
+   out['anchor_head_hash']=anchor.get('head_hash')
+   if anchor.get('count')!=checked or anchor.get('head_hash')!=previous:
+    out['valid']=False
+    out['failure']='anchor_mismatch'
+    out['detail']=(f"anchored head {str(anchor.get('head_hash'))[:16]}... over {anchor.get('count')} records "
+                   f"but the store now holds {checked} with head {previous[:16]}... "
+                   "(tail deletion, truncation or a rewritten database)")
+  else:
+   out['anchored']=False
+  return out
+ def _anchor_path(self):
+  return Path(self.path+'.anchor')
+ def _read_anchor(self):
+  try:
+   p=self._anchor_path()
+   return json.loads(p.read_text()) if p.is_file() else None
+  except Exception: return None
+ def _write_anchor(self,count,head_hash):
+  """Persist the head hash OUTSIDE the database, so a party who can rewrite the database cannot
+  silently agree with itself. Best effort: a read-only or foreign-owned directory must not stop
+  alerts being stored, it only means the store is unanchored and says so."""
+  try:
+   tmp=self._anchor_path().with_suffix('.tmp')
+   tmp.write_text(json.dumps({'count':count,'head_hash':head_hash,'updated_at':datetime.now(timezone.utc).isoformat()}))
+   tmp.replace(self._anchor_path())
+  except Exception: pass
  def metric(self,**d):
   with closing(self._connect()) as con:
    self._begin_immediate(con)
